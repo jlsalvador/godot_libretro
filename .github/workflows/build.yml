@@ -1,0 +1,230 @@
+# Builds the full linux matrix inside the pinned Debian 12 (GCC 12)
+# container image, exactly like the local flow:
+#   extension:  arch {x86_64, arm64} x target {template_debug, template_release}
+#   cores:      each of the five cores, per arch, as independent jobs
+# and packages Godot-extractable zips (tools/package.sh).
+#
+# NOTE: developed and validated locally before the first push; the repo
+# has no remote yet.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  IMAGE: godot-libretro-toolchain:12
+
+jobs:
+  extension:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, target: template_debug }
+          - { arch: x86_64, target: template_release }
+          - { arch: arm64, target: template_debug }
+          - { arch: arm64, target: template_release }
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
+      - name: Build toolchain image
+        run: docker build -t ${{ env.IMAGE }} tools/
+      - name: Build extension
+        run: >-
+          docker run --rm --network none -v "$PWD":/work -w /work ${{ env.IMAGE }}
+          scons -j"$(nproc)" target=${{ matrix.target }} arch=${{ matrix.arch }}
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ matrix.arch }}-${{ matrix.target }}
+          path: build/godot_libretro/${{ matrix.arch }}/
+
+  core-fceumm:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
+      - name: Build toolchain image
+        run: docker build -t ${{ env.IMAGE }} tools/
+      - name: Build core
+        run: >-
+          docker run --rm --network none -v "$PWD":/work -w /work ${{ env.IMAGE }}
+          bash -c 'make -C third_party/libretro-fceumm -j"$(nproc)" OBJARCH=${{ matrix.arch }}
+          && mkdir -p build/libretro/${{ matrix.arch }}
+          && cp third_party/libretro-fceumm/fceumm_libretro.so build/libretro/${{ matrix.arch }}/'
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-fceumm-${{ matrix.arch }}
+          path: build/libretro/${{ matrix.arch }}/
+
+  core-bsnes:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
+      - name: Build toolchain image
+        run: docker build -t ${{ env.IMAGE }} tools/
+      - name: Build core
+        run: >-
+          docker run --rm --network none -v "$PWD":/work -w /work ${{ env.IMAGE }}
+          bash -c 'make -C third_party/libretro-bsnes -j"$(nproc)" OBJARCH=${{ matrix.arch }}
+          && mkdir -p build/libretro/${{ matrix.arch }}
+          && cp third_party/libretro-bsnes/bsnes_libretro.so build/libretro/${{ matrix.arch }}/'
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-bsnes-${{ matrix.arch }}
+          path: build/libretro/${{ matrix.arch }}/
+
+  core-mupen64plus-next:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
+      - name: Build toolchain image
+        run: docker build -t ${{ env.IMAGE }} tools/
+      - name: Build core
+        run: >-
+          docker run --rm --network none -v "$PWD":/work -w /work ${{ env.IMAGE }}
+          bash -c 'make -C third_party/libretro-mupen64plus-nx -j"$(nproc)" platform=unix HAVE_THR_AL=1 LLE=1 ARCH=${{ matrix.arch }}
+          && mkdir -p build/libretro/${{ matrix.arch }}
+          && cp third_party/libretro-mupen64plus-nx/mupen64plus_next_libretro.so build/libretro/${{ matrix.arch }}/'
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-mupen64plus-next-${{ matrix.arch }}
+          path: build/libretro/${{ matrix.arch }}/
+
+  core-gambatte:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
+      - name: Build toolchain image
+        run: docker build -t ${{ env.IMAGE }} tools/
+      - name: Build core
+        env:
+          GAMBATTE_FLAGS: ${{ matrix.arch == 'arm64' && 'CROSS_COMPILE=aarch64-linux-gnu- ARCHITECTURE=arm ARCHITECTURE_S=arm ARCHITECTURE_T=arm' || 'CROSS_COMPILE=x86_64-linux-gnu- ARCHITECTURE=x86 ARCHITECTURE_S=i386 ARCHITECTURE_T=amd64' }}
+        run: >-
+          docker run --rm --network none -v "$PWD":/work -w /work ${{ env.IMAGE }}
+          bash -c 'make -C third_party/libretro-gambatte -j"$(nproc)" $GAMBATTE_FLAGS
+          && mkdir -p build/libretro/${{ matrix.arch }}
+          && cp third_party/libretro-gambatte/gambatte_libretro.so build/libretro/${{ matrix.arch }}/'
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-gambatte-${{ matrix.arch }}
+          path: build/libretro/${{ matrix.arch }}/
+
+  core-mgba:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
+      - name: Build toolchain image
+        run: docker build -t ${{ env.IMAGE }} tools/
+      - name: Build core
+        run: >-
+          docker run --rm --network none -v "$PWD":/work -w /work ${{ env.IMAGE }}
+          bash -c 'make -C third_party/libretro-mgba -j"$(nproc)" TARGET=libretro ARCH=${{ matrix.arch }}
+          && mkdir -p build/libretro/${{ matrix.arch }}
+          && cp third_party/libretro-mgba/mgba_libretro.so build/libretro/${{ matrix.arch }}/'
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-mgba-${{ matrix.arch }}
+          path: build/libretro/${{ matrix.arch }}/
+
+  package:
+    needs: [extension, core-fceumm, core-bsnes, core-mupen64plus-next, core-gambatte, core-mgba]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble build layout
+        run: |
+          mkdir -p build
+          for a in artifacts/extension-*; do
+            name="$(basename "$a")"
+            arch="${name#extension-}"
+            target="${arch%-*}"
+            arch="${arch%-$target}"
+            mkdir -p "build/godot_libretro/$arch"
+            mv "$a" "build/godot_libretro/$arch/$target"
+            mv "build/godot_libretro/$arch/$target" "build/godot_libretro/$arch/$([ "$target" = template_debug ] && echo debug || echo release)"
+          done
+          for a in artifacts/core-*; do
+            name="$(basename "$a")"
+            rest="${name#core-}"
+            core="${rest%-*}"
+            arch="${rest%-$core}"
+            mkdir -p "build/libretro/$arch"
+            mv "$a"/* "build/libretro/$arch/"
+          done
+      - name: Package zips
+        run: bash tools/package.sh "${GITHUB_REF_NAME:-local}"
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: |
+            dist/*.zip
+            dist/manifest.md5
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: dist
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" || gh release create "${GITHUB_REF_NAME}" --notes "Precompiled Linux matrix."
+          gh release upload "${GITHUB_REF_NAME}" dist/*.zip dist/manifest.md5 --clobber

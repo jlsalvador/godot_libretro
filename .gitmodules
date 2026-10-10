@@ -1,0 +1,18 @@
+[submodule "third_party/godot-cpp"]
+	path = third_party/godot-cpp
+	url = https://github.com/godotengine/godot-cpp.git
+[submodule "third_party/libretro-fceumm"]
+	path = third_party/libretro-fceumm
+	url = https://github.com/libretro/libretro-fceumm.git
+[submodule "third_party/libretro-bsnes"]
+	path = third_party/libretro-bsnes
+	url = https://github.com/libretro/bsnes-libretro.git
+[submodule "third_party/libretro-mupen64plus-nx"]
+	path = third_party/libretro-mupen64plus-nx
+	url = https://github.com/libretro/mupen64plus-libretro-nx.git
+[submodule "third_party/libretro-gambatte"]
+	path = third_party/libretro-gambatte
+	url = https://github.com/libretro/gambatte-libretro.git
+[submodule "third_party/libretro-mgba"]
+	path = third_party/libretro-mgba
+	url = https://github.com/libretro/mgba.git
