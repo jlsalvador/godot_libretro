@@ -1,0 +1,14 @@
+; Minimal Godot project that validates the Libretro extension and cores.
+; The Makefile copies the built extension and sample ROMs into it before
+; running the test scripts; both locations are ignored.
+
+config_version=5
+
+[application]
+
+config/name="godot_libretro_tests"
+config/features=PackedStringArray("4.7")
+
+[debug]
+
+gdscript/warnings/unused_parameters=0

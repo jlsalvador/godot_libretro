@@ -1,0 +1,12 @@
+[configuration]
+
+entry_symbol = "godot_libretro_init"
+compatibility_minimum = "4.7"
+reloadable = true
+
+[libraries]
+
+linux.debug.arm64 = "res://addons/godot_libretro/.bin/linux/template_debug/arm64/libgodot_libretro.so"
+linux.release.arm64 = "res://addons/godot_libretro/.bin/linux/template_release/arm64/libgodot_libretro.so"
+linux.debug.x86_64 = "res://addons/godot_libretro/.bin/linux/template_debug/x86_64/libgodot_libretro.so"
+linux.release.x86_64 = "res://addons/godot_libretro/.bin/linux/template_release/x86_64/libgodot_libretro.so"

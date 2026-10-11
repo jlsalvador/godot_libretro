@@ -3,3 +3,8 @@ dist/
 tests/godot/addons/godot_libretro/.bin/
 tests/godot/build/
 tests/godot/roms/
+__pycache__/
+*.pyc
+*.uid
+.sconsign.dblite
+*.os
