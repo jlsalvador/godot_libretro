@@ -2,46 +2,20 @@ FROM debian:12-slim
 
 # Debian 12 (GCC 12) only: newer host toolchains (measured GCC 15)
 # miscompile the Mupen64Plus-Next core into a ~400x slower binary.
-# Everything (extension + all cores, both arches) builds inside this
-# image so host toolchain drift cannot change the artifacts.
-ARG TARGETARCH
-
+# One image per architecture (linux/amd64 and linux/arm64): each build
+# runs natively inside the image of its own arch, so this image carries
+# no cross toolchain and no foreign-arch packages.
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
 		build-essential \
 		cmake \
 		git \
 		libgl-dev \
-	libvulkan-dev \
+		libvulkan-dev \
 		nasm \
 		python3 \
-	scons \
-	xz-utils \
-	zip \
+		scons \
+		xz-utils \
+		zip \
 		zlib1g-dev \
-	&& rm -rf /var/lib/apt/lists/*
-
-# Cross toolchains for the other Linux arch.
-RUN if [ "${TARGETARCH}" = "amd64" ]; then \
-		apt-get update && \
-		apt-get install -y --no-install-recommends \
-			gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu; \
-	else \
-		apt-get update && \
-		apt-get install -y --no-install-recommends \
-			gcc-x86-64-linux-gnu g++-x86-64-linux-gnu binutils-x86-64-linux-gnu; \
-	fi \
-	&& rm -rf /var/lib/apt/lists/*
-
-# Foreign-arch GL dev package: the Mupen64Plus-Next video plugin links
-# -lGL, so cross-linking the core needs the GL headers of the other arch.
-RUN if [ "${TARGETARCH}" = "amd64" ]; then \
-		dpkg --add-architecture arm64 && \
-		apt-get update && \
-		apt-get install -y --no-install-recommends libgl-dev:arm64; \
-	else \
-		dpkg --add-architecture x86-64 && \
-		apt-get update && \
-		apt-get install -y --no-install-recommends libgl-dev:x86-64; \
-	fi \
 	&& rm -rf /var/lib/apt/lists/*
