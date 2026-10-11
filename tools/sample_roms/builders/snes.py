@@ -16,11 +16,13 @@ Program:
   * Bump a VBlank counter in ZP; every 60 VBlanks cycle CGRAM[0]
     through 15-bit XBBBBBGGGGGRRRRR: red -> green -> blue.
 
-No SPC700 program -- audio samples come out as zeros from bsnes' silent
-state, but the audio callback still fires once per frame so the test's
-audio-buffer size counter advances.  LoROM without a battery SRAM chip
-means no persistent save sidecar; the core's savestate captures the
-VBlank counter instead.
+Save/load: the header declares 8 Kbit battery-backed SRAM at $7FD5 = $82
+so the core writes a `.srm` sidecar; the ISR mirrors a seconds byte into
+$00:6000 each palette flip.
+
+Audio: no SPC700 program is loaded, so bsnes emits silent samples.  Real
+audio needs a 256-byte SPC boot image uploaded via $2180-$2183 DMA and a
+small DSP-register-writing loop; that's a bigger lift, tracked separately.
 """
 
 import struct
@@ -38,6 +40,14 @@ def build() -> bytes:
     # Vectors: point everything to our code at $0040.
     prg[0x7FFC:0x7FFE] = bytes([0x40, 0x00])   # NMI -> $0040
     prg[0x7FFE:0x8000] = bytes([0x40, 0x00])   # RESET -> $0040
+    # Declare 8 Kbit SRAM with battery (header byte $15 = bit7=battery, low
+    # nibble=2 for 8Kb).  $7FC0 is the loROM header base; $7FD5 is the
+    # RAM/feature field.  bsnes exposes $00:6000-$00:7FFF as a save area
+    # when this byte is non-zero; we mirror the seconds counter there.
+    # Best-effort: some core revisions key off the *file* offset (0xFFD5
+    # for a 64 KiB loROM) rather than the bank-00 mirror, so set both.
+    prg[0x7FD5] = 0x82
+    prg[0xFFD5] = 0x82
     # Emulation-mode RESET is at $FFFC; that's the address we're actually
     # at -- the loROM mirror makes $FFFC show through at $7FFC when the
     # core fetches from bank 00 upper area.  bsnes handles both.
@@ -57,10 +67,11 @@ def build() -> bytes:
     emit(0xA9, 0x8F)                 # LDA #$8F
     emit(0x8D, 0x00, 0x21)           # STA $2100
 
-    # Zero ZP scratch: $00 = frame counter, $01 = colour index.
+    # Zero ZP scratch: $00 = frame counter, $01 = colour index, $02 = seconds.
     emit(0xA9, 0x00)                 # LDA #$00
     emit(0x85, 0x00)                 # STA $00
     emit(0x85, 0x01)                 # STA $01
+    emit(0x85, 0x02)                 # STA $02
 
     # Prime CGRAM[0] = RED via the classic CGADD / CGDATA path.
     emit(0x8D, 0x21, 0x21)           # STA $2121 (CGADD = 0)
@@ -133,6 +144,13 @@ def build() -> bytes:
     # Re-latch CGADD to 0 for next cycle (already 0, but be safe).
     emit(0xA9, 0x00)
     emit(0x8D, 0x21, 0x21)
+    # Bump the seconds byte in ZP $02 and mirror it into SRAM at $6000.
+    # bsnes treats $00:6000-$00:7FFF as loROM external SRAM when the
+    # header's RAM field ($7FD5) has bit 7 (battery) + a non-zero size;
+    # see the header block below.
+    emit(0xEE, 0x02, 0x00)           # INC $0002  (seconds counter)
+    emit(0xA5, 0x02)                 # LDA $02
+    emit(0x8D, 0x00, 0x60)           # STA $6000  (external SRAM byte 0)
     # Back to poll.
     emit(0x80, 0x00)                 # BRA poll_addr
     bra_poll_end = len(code) - 1
