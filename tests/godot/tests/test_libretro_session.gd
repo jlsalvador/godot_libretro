@@ -12,6 +12,11 @@ func _run_test() -> void:
 	var save_directory := ProjectSettings.globalize_path("res://build/libretro_session_saves")
 	var expected_save_path := save_directory.path_join("fceumm_libretro/sample.srm")
 	session.set_save_directory(save_directory)
+	# The sample ROM counts up in SRAM instead of writing fixed markers, so the
+	# run starts from an empty sidecar to make both sessions' counters mean
+	# something: written by the first one, restored from disk by the second.
+	if FileAccess.file_exists(expected_save_path):
+		DirAccess.remove_absolute(expected_save_path)
 
 	if not session.load_core(core_path):
 		push_error("Libretro core failed to load: %s" % session.get_last_error())
@@ -103,10 +108,12 @@ func _run_test() -> void:
 		push_error("Stopping a battery-backed ROM should persist its SRAM file.")
 		quit(1)
 		return
-	if _read_save_byte(expected_save_path, 0) != 0x42:
-		push_error("The saved SRAM should contain the test ROM's first-run marker.")
+	var first_counter := _read_save_u16(expected_save_path)
+	if first_counter <= 0:
+		push_error("The sample ROM counts seconds up in SRAM: the first session should leave a non-zero counter, got %d." % first_counter)
 		quit(1)
 		return
+
 
 	if not session.load_core(core_path) or not session.load_game(rom_path):
 		push_error("The saved SRAM ROM should be loadable for a second session.")
@@ -116,16 +123,21 @@ func _run_test() -> void:
 	for frame_index in range(3):
 		session.run_frame()
 	session.stop()
-	if _read_save_byte(expected_save_path, 1) != 0x55:
-		push_error("The second session should restore the first SRAM byte and write the loaded-save marker.")
+	var second_counter := _read_save_u16(expected_save_path)
+	if second_counter < first_counter or second_counter <= 0:
+		push_error("The second session should boot with the first session's SRAM restored: counter %d after %d." % [second_counter, first_counter])
 		quit(1)
 		return
 	quit(0)
 
 
-func _read_save_byte(path: String, byte_index: int) -> int:
+## The sample NES ROM keeps a 16-bit little-endian counter at $6000, which is
+## the first thing FCEUmm writes to the sidecar.
+func _read_save_u16(path: String) -> int:
 	var file := FileAccess.open(path, FileAccess.READ)
-	if file == null or file.get_length() <= byte_index:
+	if file == null or file.get_length() < 2:
 		return -1
-	file.seek(byte_index)
-	return file.get_8()
+	file.seek(0)
+	var low := file.get_8()
+	var high := file.get_8()
+	return low | (high << 8)

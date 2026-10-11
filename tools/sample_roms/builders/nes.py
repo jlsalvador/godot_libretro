@@ -3,8 +3,11 @@
 6502 program, all in the 16 KiB PRG bank at $8000-$BFFF:
 
   * wait for the PPU to settle (two BIT $2002 reads clear the VBlank latch)
-  * enable the display ($2001 = $1E) and start pulse channel 1 at ~440 Hz
-    via $4000-$4003 + $4015, so the audio callback receives real samples
+  * keep NMI off in $2000: this program polls, and the NMI vector is the reset
+    entry, so enabling it would restart the boot code on every VBlank
+  * enable the display ($2001 = $06: show background and sprites) and start
+    pulse channel 1 at ~440 Hz via $4000-$4003 + $4015, so the audio callback
+    receives real samples
   * main loop: poll the VBlank flag in $2002 bit 7, bump a 16-bit counter
     at ZP $02:$03; every 60 VBlanks (~1 s) cycle the backdrop palette
     through red -> green -> blue by rewriting $3F00, and bump the
@@ -62,10 +65,15 @@ def build() -> bytes:
     emit(0x2C, 0x02, 0x20)
     emit(0x2C, 0x02, 0x20)
 
-    # $2000 = 0x80 (NMI disabled -- we poll; pattern table select default).
-    emit(0xA9, 0x80, 0x8D, 0x00, 0x20)
-    # $2001 = 0x1E (show background + sprite, no clip).
-    emit(0xA9, 0x1E, 0x8D, 0x01, 0x20)
+    # $2000 = 0x00: NMI stays off, because this program polls $2002 instead of
+    # taking NMIs, and the NMI vector is the reset entry: enabling it would
+    # restart the boot sequence on every VBlank and the frame counter below
+    # would never reach 60.
+    emit(0xA9, 0x00, 0x8D, 0x00, 0x20)
+    # $2001 = 0x06: show background and sprites (bits 1 and 2). The other bits
+    # of 0x1E are colour emphasis and pattern-table selects, which do not turn
+    # the PPU on; with the display off $2002 never raises its VBlank flag.
+    emit(0xA9, 0x06, 0x8D, 0x01, 0x20)
 
     # Prime $3F00 = red.
     emit(0xA9, 0x3F, 0x8D, 0x06, 0x20)      # PPU addr hi
@@ -94,9 +102,9 @@ def build() -> bytes:
     # per VBlank.
 
     # Increment 16-bit VBlank counter at $02/$03.
-    emit(0xEE, ZP_CNT_LO)                   # INC $02
+    emit(0xE6, ZP_CNT_LO)                   # INC $02 (zero page: $EE is the
     emit(0xD0, 0x02)                        # BNE skip_hi (+2)
-    emit(0xEE, ZP_CNT_HI)                   # INC $03
+    emit(0xE6, ZP_CNT_HI)                   # INC $03
     # skip_hi:
 
     # Compare low byte to 60.  (Counter wraps at 256 anyway; we're fine.)
@@ -112,6 +120,9 @@ def build() -> bytes:
 
     # Advance colour index modulo 3.
     emit(0xA5, ZP_IDX)                       # LDA $04
+    emit(0x18)                               # CLC: the CMP #$3C that routed us
+                                             # here left Carry set, and ADC
+                                             # would then add 2 and skip green.
     emit(0x69, 0x01)                         # ADC #$01
     emit(0xC9, 0x03)                         # CMP #$03
     emit(0x90, 0x02)                         # BCC keep (+2)
@@ -119,16 +130,16 @@ def build() -> bytes:
     # keep:
     emit(0x85, ZP_IDX)                       # STA $04
 
-    # Look up the palette entry from our 3-byte table (indexed by X).
+    # Poke the new palette entry into $3F00. The PPU address is written first:
+    # the LDA #$3F / LDA #$00 pair would otherwise clobber the colour looked up
+    # from the table, and $2007 would always receive $00.
     emit(0xA5, ZP_IDX)                       # LDA $04
     emit(0xAA)                               # TAX
+    emit(0xA9, 0x3F, 0x8D, 0x06, 0x20)       # PPU address hi
+    emit(0xA9, 0x00, 0x8D, 0x06, 0x20)       # PPU address lo
     # Table lives just after the code; we patch the LDA abs,X below.
     emit(0xBD, 0x00, 0x00)                   # LDA <table>, X  (patched)
     lda_table_pos = len(code) - 2
-
-    # Poke the new palette entry into $3F00.
-    emit(0xA9, 0x3F, 0x8D, 0x06, 0x20)
-    emit(0xA9, 0x00, 0x8D, 0x06, 0x20)
     emit(0x8D, 0x07, 0x20)                   # STA $2007
 
     # Re-latch pulse 1 (write $4015 again -- the length counter would
