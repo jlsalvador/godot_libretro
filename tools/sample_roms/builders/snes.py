@@ -1,58 +1,176 @@
 """bsnes / SNES sample ROM (64 KiB loROM).
 
-Baseline: display on, black backdrop, wait-VBlank idle loop.  Ported
-verbatim from the original single-file generator; the R/G/B cycle and
-save/load behaviour are added in follow-up edits.
+65816 in *emulation* mode (what the CPU resets to): 8-bit accumulator +
+index, direct page at $0000, absolute addresses in bank $00.  Code lives
+at $0040 (loROM PRG offset 0x40), vectors at $FFFA-$FFFF.
+
+Program:
+
+  * SEI, CLD
+  * Set MADCTR ($2181-$2184) so the memory-mapped port can write CGRAM
+    indirectly... actually simpler: use the classic PPU path
+      - STA $2121 (CGADD) with index 0
+      - STA $2122 (CGDATA) twice (lo/hi of the 15-bit colour)
+  * INIDISP = $8F (screen on)
+  * Wait for VBlank via $4210 bit 7
+  * Bump a VBlank counter in ZP; every 60 VBlanks cycle CGRAM[0]
+    through 15-bit XBBBBBGGGGGRRRRR: red -> green -> blue.
+
+No SPC700 program -- audio samples come out as zeros from bsnes' silent
+state, but the audio callback still fires once per frame so the test's
+audio-buffer size counter advances.  LoROM without a battery SRAM chip
+means no persistent save sidecar; the core's savestate captures the
+VBlank counter instead.
 """
 
 import struct
 import zlib
 
 
+RED   = 0x001F
+GREEN = 0x03E0
+BLUE  = 0x7C00
+
+
 def build() -> bytes:
     prg = bytearray(0x10000)
 
-    # Vectors: NMI/RESET/IRQ -> $0040 (bank 00 loROM mirror; the ROM
-    # header at $7FC0-$7FFF provides the boot-time fetch).
-    prg[0x00:0x02] = bytes([0x48, 0x40])       # JMP $0040 (unused -- see below)
+    # Vectors: point everything to our code at $0040.
     prg[0x7FFC:0x7FFE] = bytes([0x40, 0x00])   # NMI -> $0040
-    prg[0x7FFD] = 0x00                          # RESET low byte shares
-    prg[0x7FFE:0x8000] = bytes([0x40, 0x00])   # SWI/IRQ -> $0040
+    prg[0x7FFE:0x8000] = bytes([0x40, 0x00])   # RESET -> $0040
+    # Emulation-mode RESET is at $FFFC; that's the address we're actually
+    # at -- the loROM mirror makes $FFFC show through at $7FFC when the
+    # core fetches from bank 00 upper area.  bsnes handles both.
 
-    # 65816: SEI, CLD, LDA #$00, STA $2133 (backdrop colour 0),
-    # LDA #$80, STA $2100 (display on), then wait for VBlank.
-    code = bytes([
-        0x78,                    # SEI
-        0xD8,                    # CLD
-        0xA9, 0x00,              # LDA #$00
-        0x8B, 0x33, 0x21,        # STA $2133 (via long-mode absolute)
-        0xA9, 0x80,              # LDA #$80
-        0x8B, 0x00, 0x21,        # STA $2100 (INIDISP: screen off + force blank)
-        0xAD, 0x10, 0x42,        # LDA $4210 (VBlank flag)
-        0x29, 0x80,              # AND #$80
-        0x10, 0xF9,              # BPL back to LDA $4210
-        0x4C, 0x0C, 0x00,        # JMP $004C (idle)
-    ])
-    prg[0x0040:0x0040 + len(code)] = code
+    code = bytearray()
+    def emit(*bs): code.extend(bs)
+    def here(): return 0x40 + len(code)
+
+    # ---- boot ----------------------------------------------------------
+    emit(0x78)                       # SEI
+    emit(0xAB)                       # PLB (pop a $00 bank byte onto DB; harmless)
+    emit(0xEB)                       # XBA (swap upper accumulator into bank)
+    emit(0x9B)                       # TXY -- actually not needed.  Remove.
+    code.pop()
+    emit(0xE2, 0x30)                 # SEP #$30 -> 8-bit A/X/Y + memory
+    emit(0xC2, 0x30)                 # REP #$30 -> 16-bit A/X/Y? no, we want 8.
+    code[-2:] = b""                  # remove the two just-emitted bytes
+    emit(0xE2, 0x30)                 # SEP #$30 again
+    # Clear decimal.
+    emit(0xD8)                       # CLD
+
+    # INIDISP = $8F (screen on, brightness max).
+    emit(0xA9, 0x8F)                 # LDA #$8F
+    emit(0x8D, 0x00, 0x21)           # STA $2100 (long abs; DBR=$00)
+
+    # Zero ZP scratch: $00=frame counter, $01=colour index.
+    emit(0xA9, 0x00)                 # LDA #$00
+    emit(0x85, 0x00)                 # STA $00
+    emit(0x85, 0x01)                 # STA $01
+
+    # Prime CGRAM[0] = RED.
+    emit(0xCD, 0x01, 0x1F)           # (unused) -- skip
+    code[-3:] = b""
+    emit(0x8D, 0x21, 0x21)           # STA $2121 (CGADD=0)
+    emit(0xA9, RED & 0xFF)           # LDA #RED_LO
+    emit(0x8D, 0x22, 0x21)           # STA $2122
+    emit(0xA9, (RED >> 8) & 0xFF)    # LDA #RED_HI
+    emit(0x8D, 0x22, 0x21)           # STA $2122
+
+    # ---- main loop ------------------------------------------------------
+    poll_addr = here()
+    # LDA $4210  (VBlank status; read once clears the flag)
+    emit(0xAD, 0x10, 0x42)
+    emit(0x29, 0x80)                 # AND #$80
+    emit(0xF0, 0x00)                 # BEQ poll_addr (patched)
+    beq_poll_pos = len(code) - 1
+
+    # Increment frame counter at ZP $00.
+    emit(0xEE, 0x00, 0x00)           # INC $00
+    # Compare with 60.
+    emit(0xA5, 0x00)                 # LDA $00
+    emit(0xC9, 60)                   # CMP #60
+    emit(0xD0, 0x00)                 # BNE poll_addr (patched)
+    bne_poll_pos = len(code) - 1
+
+    # Per-second: reset counter, cycle colour, write CGRAM[0].
+    emit(0xA9, 0x00)                 # LDA #$00
+    emit(0x85, 0x00)                 # STA $00
+
+    # Colour index mod 3 at $01.
+    emit(0xEE, 0x01, 0x00)           # INC $01
+    emit(0xA5, 0x01)                 # LDA $01
+    emit(0xC9, 0x03)                 # CMP #3
+    emit(0x90, 0x02)                 # BCC keep (+2)
+    emit(0xA9, 0x00)                 # LDA #0 (wrap)
+    # keep:
+    emit(0x85, 0x01)                 # STA $01
+
+    # Load 15-bit colour via a 2-byte table lookup.  We switch by CMP+BEQ.
+    emit(0xA5, 0x01)                 # LDA $01
+    emit(0xC9, 0x00)                 # CMP #0
+    emit(0xF0, 0x00)                 # BEQ .c_red (patched)
+    beq_c_red = len(code) - 1
+    emit(0xC9, 0x01)                 # CMP #1
+    emit(0xF0, 0x00)                 # BEQ .c_green
+    beq_c_green = len(code) - 1
+    emit(0xC9, 0x02)                 # CMP #2 -- implicit, fall to .c_blue
+    c_blue = here()
+    emit(0xA9, BLUE & 0xFF)          # LDA #BLUE_LO
+    emit(0x8D, 0x22, 0x21)           # STA $2122
+    emit(0xA9, (BLUE >> 8) & 0xFF)   # LDA #BLUE_HI
+    emit(0x8D, 0x22, 0x21)           # STA $2122
+    emit(0x80, 0x00)                 # BRA .done (patched)
+    bra_done_blue = len(code) - 1
+
+    c_red = here()
+    emit(0xA9, RED & 0xFF)
+    emit(0x8D, 0x22, 0x21)
+    emit(0xA9, (RED >> 8) & 0xFF)
+    emit(0x8D, 0x22, 0x21)
+    emit(0x80, 0x00)                 # BRA .done
+    bra_done_red = len(code) - 1
+
+    c_green = here()
+    emit(0xA9, GREEN & 0xFF)
+    emit(0x8D, 0x22, 0x21)
+    emit(0xA9, (GREEN >> 8) & 0xFF)
+    emit(0x8D, 0x22, 0x21)
+
+    done = here()
+    # Re-latch CGADD to 0 for next cycle (already 0, but be safe).
+    emit(0xA9, 0x00)
+    emit(0x8D, 0x21, 0x21)
+    # Back to poll.
+    emit(0x80, 0x00)                 # BRA poll_addr
+    bra_poll_end = len(code) - 1
+
+    def patch(pos, target):
+        rel = target - (0x40 + pos + 1)
+        assert -128 <= rel <= 127, f"branch rel {rel} out of range"
+        code[pos] = rel & 0xFF
+
+    patch(beq_poll_pos, poll_addr)
+    patch(bne_poll_pos, poll_addr)
+    patch(beq_c_red, c_red)
+    patch(beq_c_green, c_green)
+    patch(bra_done_blue, done)
+    patch(bra_done_red, done)
+    patch(bra_poll_end, poll_addr)
+
+    prg[0x40:0x40 + len(code)] = code
 
     header = bytearray(0x40)
-    header[0x00:0x14] = b"Libretro sample      "
+    header[0x00:0x14] = b"Libretro SNES Sample"
     header[0x14:0x24] = b"Libretro          "
     header[0x24:0x29] = b"LIBRE"
-    header[0x29] = 0x00
     header[0x2A] = 0x33
-    header[0x2B] = 0x00
-    header[0x2C] = 0x00          # Mapper: loROM.
-    header[0x2D] = 0x20          # PRG size: 64 KiB.
-    header[0x2E] = 0x00          # RAM size: none.
-    header[0x2F] = 0x00          # SRAM size: none.
-    header[0x30] = 0x00          # Region: NTSC America.
-    header[0x31] = 0x00          # Revision.
+    header[0x2C] = 0x00                 # loROM
+    header[0x2D] = 0x20                 # PRG 64 KiB (2^5 = 32 KiB per header byte? convention)
+    header[0x30] = 0x00                 # NTSC
     rom = bytes(header) + bytes(prg[0x40:])
-    checksum = sum(rom[0x12:0x32]) & 0xFF
-    crc = zlib.crc32(rom) & 0xFFFFFFFF
     fixed = bytearray(rom)
-    fixed[0x32] = checksum
-    fixed[0x33] = 0x00
-    fixed[0x34:0x38] = struct.pack("<I", crc)
+    fixed[0x32] = 0x00                  # checksum lo (leave 0; bsnes tolerates)
+    fixed[0x33] = 0xFF                  # checksum hi
+    fixed[0x34:0x38] = struct.pack("<I", zlib.crc32(rom) & 0xFFFFFFFF)
     return bytes(fixed)
