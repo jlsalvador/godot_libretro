@@ -69,12 +69,10 @@ func _run_test() -> void:
 			failures.append("%s: failed to load %s: %s" % [core_id, rom_path, session.get_last_error()])
 			
 			continue
-		if core_id == "mupen64plus_next":
-			# N64 CPU runs in a coroutine that only yields on an interrupt;
-			# the sample game arms the vertical interrupt (VI_V_INTR <
-			# VI_V_SYNC) and enables IE/IM4 so each vertical blank yields
-			# one video frame back to the frontend.
-			pass
+		# mupen64plus_next CPU runs in a coroutine that yields back to the
+		# frontend inside vi_vertical_interrupt_event -> new_vi() ->
+		# retro_return(); the sample boots the VI with a full NTSC register
+		# set so each vertical blank dispatches one video frame.
 		var video_frames := 0
 		var audio_frames := 0
 		var start_time := Time.get_ticks_usec()
@@ -87,12 +85,7 @@ func _run_test() -> void:
 		print("%s: %s %s, %s, sample game 120 frames: video=%d audio=%d in %.0f ms" % [
 			core_id, core_name, session.get_core_version(), extensions,
 			video_frames, audio_frames, elapsed_ms])
-		# N64 sample boots and arms the VI, but producing a real
-		# video_cb frame requires a full RSP display list through the
-		# DPC/DPS -> RDP -> VI pipeline; that's out of scope for a hand-
-		# assembled .v64 and is tracked separately.  Skip the frame
-		# assertion for that one core only.
-		if video_frames < 120 and core_id != "mupen64plus_next":
+		if video_frames < 120:
 			failures.append("%s: expected 120 video frames from the sample game, got %d" % [core_id, video_frames])
 	if failures.is_empty():
 		print("All Libretro cores loaded and ran their sample game: %s" % ", ".join(CORES.keys()))

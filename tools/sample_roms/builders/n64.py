@@ -6,20 +6,31 @@ Boot flow (mupen64plus-next + HLE bootrom):
      sets PC = KSEG1 0xA4000040.  The new_dynarec maps KSEG1
      0xA4000000-0xA4001000 to RSP memory, so the *boot code* lives at
      ROM offset 0x40 and is fetched from there.
-  2. On any RCP (VI/AI/...) interrupt the R4300 jumps to KSEG0 0x80000180,
-     which the dynarec maps to RDRAM offset 0x180.  ROM bytes are NOT
-     visible at 0x80000180, so the boot code installs a minimal `eret`
-     handler into RDRAM via `sw` before arming the VI.  Each vertical
-     blank -> eret -> returns to the spin loop; the updateScreen()
-     callback that runs inside vi_vertical_interrupt_event is what
-     actually delivers the frame to the frontend.
+  2. The CPU sits in a tight `bne $t0, $zero, -1` spin loop while the VI
+     counter advances.  When CP0 COUNT crosses the scheduled VI_INT
+     event, `gen_interrupt` runs `vi_vertical_interrupt_event`, which
+     calls `gfx.updateScreen()` (Angrylion fills the frontend's
+     framebuffer + flips libretro_swap_buffer) and then `new_vi()`,
+     which does `retro_return()` -> `co_switch(foreground_thread)`.
+     The frontend's retro_run returns, video_cb is dispatched, and the
+     next run_frame() re-enters the CPU coroutine right where it left
+     off -- the spin loop resumes.  We never take an R4300 exception,
+     so no `eret` handler is installed at KSEG0 0x80000180.
 
-Known limitation: producing *visible* pixels needs a real RSP display
-list routed through the DPC/DPS -> RDP -> VI pipeline (Angrylion's
-vdac_sync only fires once per processed display list).  This ROM boots
-and arms the VI without crashing, but doesn't currently emit frames
-into the frontend's video_cb; wiring the full display-list path is
-tracked separately.
+What makes a frame actually appear in the frontend:
+  * Every VI register (VI_STATUS, VI_ORIGIN, VI_WIDTH, VI_V_INTR,
+    VI_V_CURRENT_LINE, VI_TIMING, VI_V_SYNC, VI_H_SYNC, VI_H_SYNC_LEAP,
+    VI_H_VIDEO, VI_V_VIDEO, VI_V_BURST, VI_X_SCALE, VI_Y_SCALE) must be
+    programmed with real NTSC values, not just VI_V_SYNC and VI_V_INTR.
+  * VI_ORIGIN must be non-zero -- Angrylion's n64video/vi/vi.c:642
+    short-circuits with `screen_swap(true)` when the framebuffer word
+    address is 0, so the frontend's libretro_swap_buffer never flips on.
+  * PIF_CTRL <- 8 releases the CIC lockup; MI_INTR_MASK bit 7 unmasks
+    the VI interrupt.
+  * CP0 exception vectors are NOT needed for frame delivery:
+    `vi_vertical_interrupt_event` runs `gfx.updateScreen() -> new_vi()`
+    first, and `new_vi()` does the co_switch back to the frontend.  The
+    RCP interrupt fires *after* that yield.
 
 R4300 opcode reference:
     https://www.zophar.net/fileuploads/2/10655uytsm/N64ops03.txt
@@ -81,46 +92,96 @@ def build() -> bytes:
     def sw(rt, base, off):
         return (0x2B << 26) | (base << 21) | (rt << 16) | (off & 0xFFFF)
 
-    def mtc0(rt, rd):
-        # MTC0 lives in the COP0 sub-opcode table with rs_field=4 (see
-        # idec.c:365-366, pure_interp.c:446).  rt = GPR source (bits 20:16),
-        # rd = CP0 destination (bits 15:11).
-        return (0x10 << 26) | (0x04 << 21) | (rt << 16) | (rd << 11)
 
     def bne(rs, rt, off):
         return (0x05 << 26) | (rs << 21) | (rt << 16) | (off & 0xFFFF)
 
     NOP = 0x00000000
 
-    T0, T1, T2, T3 = 8, 9, 10, 11
+    T0, T1, T2 = 8, 9, 10
     ZR = 0
     ws = []
 
-    # Install the interrupt handler at KSEG0 0x80000180 (RDRAM offset 0x180).
-    ws += [lui(T0, 0x8000), ori(T0, T0, 0x180)]
-    ws += [lui(T1, 0x4200), ori(T1, T1, 0x18)]      # $t1 = 0x42000018 (eret)
-    ws += [sw(T1, T0, 0)]
-    ws += [addiu(ZR, T2, 0), sw(T2, T0, 4)]         # nop (delay slot)
+    # -- Full boot sequence ------------------------------------------------
+    # The R4300's PC starts at KSEG1 0xA4000040 (HLE bootrom's memcpy target).
+    # vi_vertical_interrupt_event calls gfx.updateScreen() then new_vi() which
+    # does co_switch(foreground) -> the frontend emits the frame.  That yield
+    # happens BEFORE the RCP interrupt would be raised, so we don't need to
+    # install an exception handler or set CP0.Status: the CPU just needs to
+    # sit in a tight spin loop while the VI counter fires periodically.
+    #
+    # Sequence:
+    #   1. PIF_CTRL <- 8         (release CIC lockup)
+    #   2. MI_INTR_MASK |= VI    (unmask VI so it can raise IP2; even though
+    #                              we don't take the exception, some paths
+    #                              still want the bit set)
+    #   3. Program every VI register; VI_ORIGIN must be non-zero (Angrylion
+    #      rejects the frame at vi.c:642 if the framebuffer pointer is 0).
+    #   4. Fill RDRAM[0x100000..0x100000+320*240*2] with RED halfwords so
+    #      the rendered frame isn't pure black.
+    #   5. bne self-loop (dynarec-friendly: rs1 != rs2 to dodge the
+    #      "beq $x, $x, odd" branch-target rewrite at new_dynarec.c:9408).
 
-    # Video interface registers (KSEG1, uncached) at 0xA4400000.
-    # vi_reg = (address & 0x3f) >> 2, so register N is at byte offset 4*N.
-    ws += [lui(T0, 0xA440)]
-    ws += [sw(ZR,  T0, 0x04)]                        # VI_ORIGIN = 0
-    ws += [addiu(ZR, T1, 320),   sw(T1, T0, 0x08)]   # VI_WIDTH
-    ws += [addiu(ZR, T1, 299),   sw(T1, T0, 0x18)]   # VI_V_SYNC
-    ws += [addiu(ZR, T1, 1),     sw(T1, T0, 0x0C)]   # VI_V_INTR (< V_SYNC)
-    ws += [addiu(ZR, T1, 0x200), sw(T1, T0, 0x1C)]   # VI_X_SCALE
-    ws += [addiu(ZR, T1, 0x400), sw(T1, T0, 0x20)]   # VI_Y_SCALE
-    ws += [addiu(ZR, T1, 0x0001), sw(T1, T0, 0x00)]  # VI_STATUS = enable
-    ws += [addiu(ZR, T1, 0x300), sw(T1, T0, 0x08)]   # re-latch VI_WIDTH
+    # --- 1. PIF_CTRL <- 8 (KSEG1 0xBFC007FC) ---
+    ws += [addiu(ZR, T1, 8), lui(T0, 0xBFC0), ori(T0, T0, 0x7FC), sw(T1, T0, 0)]
 
-    # CP0 Status: IE (bit 0) | KX (bit 7) | IM2 (bit 10) = 0x0481.
-    ws += [addiu(ZR, T3, 0x0481), mtc0(T3, 0)]
+    # --- 2. MI_INTR_MASK |= MI_INTR_VI (KSEG1 0xA430000C) ---
+    # update_mi_intr_mask: setting the VI-mask bit requires writing 0x80
+    # (bit 7 of the write value -> mask |= MI_INTR_VI).  See mi_controller.c.
+    ws += [addiu(ZR, T1, 0x80), lui(T0, 0xA430), ori(T0, T0, 0x0C), sw(T1, T0, 0)]
 
-    # Spin with `bne $t0, $zero, -1` (not `beq $t0, $t0, -1`): the
-    # new_dynarec heuristic at new_dynarec.c:9408-9410 detects
-    # (CJUMP && rs1==rs2 && imm LSB=1) and rewrites the branch target to
-    # PC+8, silently breaking any "beq $x, $x, odd" self-loop.
+    # --- 3. VI registers ---
+    ws += [lui(T0, 0xA440)]                            # $t0 = VI base
+
+    def li_full(rt, val):
+        """Load a 32-bit immediate into rt as [lui upper, ori lower]."""
+        return [lui(rt, (val >> 16) & 0xFFFF), ori(rt, rt, val & 0xFFFF)]
+
+    def store(reg_byte_offset, val):
+        """lui/ori loads `val` into $t1, then `sw $t1, offset($t0)`."""
+        return li_full(T1, val) + [sw(T1, T0, reg_byte_offset)]
+
+    ws += store(0x00, 0x0002)                          # VI_STATUS   = BPP16
+    ws += store(0x04, 0x00100000)                      # VI_ORIGIN   = 1 MB into RDRAM (byte addr)
+    ws += store(0x08, 320)                            # VI_WIDTH
+    ws += store(0x0C, 0x200)                          # VI_V_INTR
+    ws += store(0x10, 0)                              # VI_V_CURRENT_LINE
+    ws += store(0x14, 0x03E52239)                     # VI_TIMING
+    ws += store(0x18, 0x20D)                          # VI_V_SYNC   = 525
+    ws += store(0x1C, 0xC15)                          # VI_H_SYNC
+    ws += store(0x20, 0xC150C15)                      # VI_H_SYNC_LEAP
+    ws += store(0x24, 0x6C02EC)                       # VI_H_VIDEO
+    ws += store(0x28, 0x2501FF)                       # VI_V_VIDEO
+    ws += store(0x2C, 0xE0204)                        # VI_V_BURST
+    ws += store(0x30, 0x200)                          # VI_X_SCALE  = 100*320/160
+    ws += store(0x34, 0x400)                          # VI_Y_SCALE  = 100*240/60
+
+    # --- 4. Fill a small region of the framebuffer with RED halfwords ---
+    # VI_ORIGIN = 0x100000 (byte offset), so the R4300-side framebuffer
+    # address is KSEG1 0xA0100000 (uncached RDRAM mirror).  Only fill one
+    # scanline (320 halfwords = 640 bytes) to keep the boot loop small;
+    # the rest of the "frame" reads whatever the pif HLE left there (0 =
+    # black).  Angrylion's vi.c:642 gate is `frame_buffer != 0`, not the
+    # actual pixel content, so a single filled line is enough to make the
+    # VI produce a non-blank screen_swap.
+    ws += li_full(T0, 0xA0100000)                      # $t0 = framebuffer byte address
+    ws += li_full(T1, 0x0000F800)                     # $t1 = 5x RED halfwords (0xF800F800)
+    ws += [addiu(ZR, T2, 80)]                          # 80 word-writes = 160 halfwords = 320 px
+
+    # .fill_loop:
+    fill_loop_pc_words = 0     # set below; the branch offset uses this label
+    ws += [sw(T1, T0, 0)]                              # store two red pixels
+    ws += [addiu(T0, T0, 4)]                           # advance by a word
+    ws += [addiu(T2, T2, -1)]                          # decrement counter
+    ws += [bne(T2, ZR, -4)]                            # back to .fill_loop (4 words)
+    ws += [NOP]                                        # delay slot
+
+    # --- 5. Spin ---
+    # `bne $t0, $zero, -1`: at this point $t0 = 0xA0100500 (nonzero), so the
+    # branch is always taken and the delay slot is a NOP.  Not using
+    # `beq $x, $x, -1` because the dynarec heuristic at new_dynarec.c:9408
+    # rewrites the target of "CJUMP && rs1==rs2 && imm LSB=1" to PC+8,
+    # silently breaking self-loops.
     ws += [bne(T0, ZR, -1)]
     ws += [NOP]
 
