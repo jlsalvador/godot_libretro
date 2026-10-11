@@ -12,6 +12,7 @@ RUN apt-get update && \
 		cmake \
 		git \
 		libgl-dev \
+	libvulkan-dev \
 		nasm \
 		python3 \
 	scons \
@@ -21,7 +22,7 @@ RUN apt-get update && \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Cross toolchains for the other Linux arch.
-RUN if [ "${TARGETARCH}" = "x86_64" ]; then \
+RUN if [ "${TARGETARCH}" = "amd64" ]; then \
 		apt-get update && \
 		apt-get install -y --no-install-recommends \
 			gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu; \
@@ -34,13 +35,13 @@ RUN if [ "${TARGETARCH}" = "x86_64" ]; then \
 
 # Foreign-arch GL dev package: the Mupen64Plus-Next video plugin links
 # -lGL, so cross-linking the core needs the GL headers of the other arch.
-RUN if [ "${TARGETARCH}" = "x86_64" ]; then \
+RUN if [ "${TARGETARCH}" = "amd64" ]; then \
 		dpkg --add-architecture arm64 && \
 		apt-get update && \
 		apt-get install -y --no-install-recommends libgl-dev:arm64; \
 	else \
-		dpkg --add-architecture x86_64 && \
+		dpkg --add-architecture x86-64 && \
 		apt-get update && \
-		apt-get install -y --no-install-recommends libgl-dev:x86_64; \
+		apt-get install -y --no-install-recommends libgl-dev:x86-64; \
 	fi \
 	&& rm -rf /var/lib/apt/lists/*

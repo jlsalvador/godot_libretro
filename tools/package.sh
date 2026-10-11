@@ -3,12 +3,21 @@
 #   godot_libretro-linux-extension-<version>.zip
 #     all platforms + variants, addon layout (extract over a project root)
 #   godot_libretro-linux-<arch>-<core>-<version>.zip
-#     one core per architecture, with its LICENSE_<core>
+#     one core per architecture, with its LICENSE_<core> and its sample ROM
 set -eu
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 V="$1"
 CORES="fceumm bsnes mupen64plus_next gambatte mgba"
 
+rom_for_core() {
+	case "$1" in
+		fceumm) echo "sample.nes" ;;
+		bsnes) echo "sample.sfc" ;;
+		mupen64plus_next) echo "sample.v64" ;;
+		gambatte) echo "sample.gbc" ;;
+		mgba) echo "sample.gba" ;;
+	esac
+}
 rm -rf dist
 mkdir -p dist
 
@@ -31,10 +40,9 @@ cp LICENSE "${stage}/addons/godot_libretro/"
 for arch in x86_64 arm64; do
 	for core in ${CORES}; do
 		(
-			cd "build/libretro/${arch}"
+		cd "build/libretro/${arch}"
 			zip -9 -X "/work/dist/godot_libretro-linux-${arch}-${core}-${V}.zip" \
-				"${core}_libretro.so" -j "/work/LICENSES/LICENSE_${core}" >/dev/null
-		)
+				"${core}_libretro.so" -j "/work/LICENSES/LICENSE_${core}" "/work/build/roms/$(rom_for_core "${core}")" >/dev/null
 	done
 done
 
