@@ -48,30 +48,22 @@ def build() -> bytes:
 
     # ---- boot ----------------------------------------------------------
     emit(0x78)                       # SEI
-    emit(0xAB)                       # PLB (pop a $00 bank byte onto DB; harmless)
-    emit(0xEB)                       # XBA (swap upper accumulator into bank)
-    emit(0x9B)                       # TXY -- actually not needed.  Remove.
-    code.pop()
-    emit(0xE2, 0x30)                 # SEP #$30 -> 8-bit A/X/Y + memory
-    emit(0xC2, 0x30)                 # REP #$30 -> 16-bit A/X/Y? no, we want 8.
-    code[-2:] = b""                  # remove the two just-emitted bytes
-    emit(0xE2, 0x30)                 # SEP #$30 again
-    # Clear decimal.
     emit(0xD8)                       # CLD
+    # Emulation mode already: 8-bit A/X/Y, memory; direct page $0000.
+    # (If the core brought us up in native mode we'd XCE + SEP/REP here,
+    # but bsnes resets to emulation mode per the 65816 spec.)
 
-    # INIDISP = $8F (screen on, brightness max).
+    # INIDISP = $8F (screen on, max brightness).
     emit(0xA9, 0x8F)                 # LDA #$8F
-    emit(0x8D, 0x00, 0x21)           # STA $2100 (long abs; DBR=$00)
+    emit(0x8D, 0x00, 0x21)           # STA $2100
 
-    # Zero ZP scratch: $00=frame counter, $01=colour index.
+    # Zero ZP scratch: $00 = frame counter, $01 = colour index.
     emit(0xA9, 0x00)                 # LDA #$00
     emit(0x85, 0x00)                 # STA $00
     emit(0x85, 0x01)                 # STA $01
 
-    # Prime CGRAM[0] = RED.
-    emit(0xCD, 0x01, 0x1F)           # (unused) -- skip
-    code[-3:] = b""
-    emit(0x8D, 0x21, 0x21)           # STA $2121 (CGADD=0)
+    # Prime CGRAM[0] = RED via the classic CGADD / CGDATA path.
+    emit(0x8D, 0x21, 0x21)           # STA $2121 (CGADD = 0)
     emit(0xA9, RED & 0xFF)           # LDA #RED_LO
     emit(0x8D, 0x22, 0x21)           # STA $2122
     emit(0xA9, (RED >> 8) & 0xFF)    # LDA #RED_HI
