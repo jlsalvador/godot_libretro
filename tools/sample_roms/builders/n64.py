@@ -96,10 +96,55 @@ def build() -> bytes:
     def bne(rs, rt, off):
         return (0x05 << 26) | (rs << 21) | (rt << 16) | (off & 0xFFFF)
 
+    def beq(rs, rt, off):
+        return (0x04 << 26) | (rs << 21) | (rt << 16) | (off & 0xFFFF)
+
+    def lw(rt, base, off):
+        return (0x23 << 26) | (base << 21) | (rt << 16) | (off & 0xFFFF)
+
+    def andi(rs, rt, imm):
+        return (0x0C << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+    def or_i(rs, rt, imm):
+        return (0x0D << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+    def sll(rt, rd, sh):
+        # SPECIAL, funct=0, shamt in bits 10:6, rd in bits 15:11, rt in bits 20:16
+        return (rd << 11) | (rt << 16) | ((sh & 0x1F) << 6)
+
+    def addu(rd, rs, rt):
+        # SPECIAL, funct=0x21: rs (bits 25:21), rt (20:16), rd (15:11).
+        return (rs << 21) | (rt << 16) | (rd << 11) | 0x21
+
+    def j(index_word):
+        # J-op 2: 26-bit word index; upper 4 bits come from (PC+4)&0xF0000000.
+        return (2 << 26) | (index_word & 0x03FFFFFF)
+
+    def xori_op(rs, rt, imm):
+        # XOR immediate (zero-extends), op = 0x0E -- handy for a 16-bit
+        # unsigned load via `xori $rt, $zero, imm`.
+        return (0x0E << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+    def label_of(ws_index):
+        # Absolute CPU address of ws[ws_index] -- boot code lives at KSEG1
+        # 0xA4000040 in RSP memory (HLE bootrom's memcpy target).
+        return 0xA400_0040 + ws_index * 4
+
+    def rel_branch(ws_index, target_ws_index):
+        # Signed word offset for a CJUMP at ws[ws_index] targeting ws[target].
+        # MIPS semantics: target = (branch_PC + 4) + offset*4.
+        return target_ws_index - ws_index - 1
+
+    def j_to(ws_index, target_ws_index):
+        return j(label_of(target_ws_index) >> 2)
+
     NOP = 0x00000000
 
     T0, T1, T2 = 8, 9, 10
     ZR = 0
+
+    # RGB555 primaries (15-bit, XBBBBBGGGGGRRRRR).
+    RED, GREEN, BLUE = 0xF800, 0x07E0, 0x001F
     ws = []
 
     # -- Full boot sequence ------------------------------------------------
@@ -156,37 +201,104 @@ def build() -> bytes:
     ws += store(0x30, 0x200)                          # VI_X_SCALE  = 100*320/160
     ws += store(0x34, 0x400)                          # VI_Y_SCALE  = 100*240/60
 
-    # --- 4. Fill a small region of the framebuffer with RED halfwords ---
-    # VI_ORIGIN = 0x100000 (byte offset), so the R4300-side framebuffer
-    # address is KSEG1 0xA0100000 (uncached RDRAM mirror).  Only fill one
-    # scanline (320 halfwords = 640 bytes) to keep the boot loop small;
-    # the rest of the "frame" reads whatever the pif HLE left there (0 =
-    # black).  Angrylion's vi.c:642 gate is `frame_buffer != 0`, not the
-    # actual pixel content, so a single filled line is enough to make the
-    # VI produce a non-blank screen_swap.
-    ws += li_full(T0, 0xA0100000)                      # $t0 = framebuffer byte address
-    ws += li_full(T1, 0x0000F800)                     # $t1 = 5x RED halfwords (0xF800F800)
-    ws += [addiu(ZR, T2, 80)]                          # 80 word-writes = 160 halfwords = 320 px
+    # --- 4. Colour table at ROM offset 0x340 (KSEG1 0xA4000340 in RSP mem). -
+    # Three u32 words, each holding the RGB555 halfword duplicated.  Emitted
+    # after `code`; see `rom[0x340:...]` below.
 
-    # .fill_loop:
-    fill_loop_pc_words = 0     # set below; the branch offset uses this label
-    ws += [sw(T1, T0, 0)]                              # store two red pixels
-    ws += [addiu(T0, T0, 4)]                           # advance by a word
-    ws += [addiu(T2, T2, -1)]                          # decrement counter
-    ws += [bne(T2, ZR, -4)]                            # back to .fill_loop (4 words)
-    ws += [NOP]                                        # delay slot
+    # --- 5. Polling loop that repaints the framebuffer ---------------------
+    # $t0 = MI base (0xA4300000)     -- MI_INTR_REG is at +0x08
+    # $t1 = VI base (0xA4400000)     -- VI_CURRENT_REG at +0x10 clears MI.VI
+    # $t2 = colour index (0/1/2)     -- mod 3, cycled every 60 VIs (~1 s)
+    # $t3 = frame counter (0..60)
+    # $t4 = colour table base (0xA4000340 in RSP mem, HLE-copied)
+    # $t5 = framebuffer write cursor (0xA0100000 during fill)
+    # $t6 = current colour word
+    # $t7 = scratch
+    # $t8 = fill loop counter
+    # $t9 = MI read value
+    T3, T4, T5, T6, T7 = 11, 12, 13, 14, 15
+    T8, T9 = 24, 25
 
-    # --- 5. Spin ---
-    # `bne $t0, $zero, -1`: at this point $t0 = 0xA0100500 (nonzero), so the
-    # branch is always taken and the delay slot is a NOP.  Not using
-    # `beq $x, $x, -1` because the dynarec heuristic at new_dynarec.c:9408
-    # rewrites the target of "CJUMP && rs1==rs2 && imm LSB=1" to PC+8,
-    # silently breaking self-loops.
-    ws += [bne(T0, ZR, -1)]
+    ws += [lui(T0, 0xA430), ori(T0, T0, 0)]         # MI base
+    ws += [lui(T1, 0xA440), ori(T1, T1, 0)]         # VI base  (overwrites $t1 -- that's fine, no more stores)
+    ws += [addiu(T2, ZR, 0), addiu(T3, ZR, 0)]      # colour idx = 0, frame counter = 0
+    ws += [lui(T4, 0xA400), ori(T4, T4, 0x340)]     # colour table base
+
+    poll_index = len(ws)
+    # lw $t9, 8($t0)
+    ws += [lw(T9, T0, 8)]
+    # andi $t9, $t9, 0x08
+    ws += [andi(T9, T9, 0x08)]
+    # beq $t9, $zero, poll_index  -> branch offset patched below
+    beq_wait_index = len(ws)
+    ws += [0]                                       # placeholder for beq
+    ws += [NOP]                                     # delay slot
+    # sw $zero, 0x10($t1)  -- VI_CURRENT_REG <- 0 clears MI_INTR_VI
+    ws += [sw(ZR, T1, 0x10)]
+    # Preload $t7 = 60 for the frame-counter compare (addiu sign-extends,
+    # but 60 is small enough to be positive).
+    ws += [addiu(T7, ZR, 60)]
+    ws += [addiu(T3, T3, 1)]                        # frame counter += 1
+    bne_poll1_index = len(ws)
+    ws += [bne(T3, T7, 0)]                          # != 60: back to poll (offset patched below)
     ws += [NOP]
 
+    # 60 frames elapsed.  Reset counter and advance colour index.
+    ws += [addiu(T3, ZR, 0)]                        # counter = 0
+    ws += [addiu(T2, T2, 1)]                        # colour idx += 1
+    ws += [addiu(T7, ZR, 3)]                        # $t7 = 3
+    bne_wrap_index = len(ws)
+    ws += [bne(T2, T7, 0)]                          # != 3: skip wrap (offset patched)
+    ws += [NOP]
+    ws += [addiu(T2, ZR, 0)]                        # colour idx = 0
+
+    # Load colour word: $t7 = $t2 << 2; $t7 += $t4; $t6 = lw $t7
+    ws += [sll(T7, T2, 2)]                          # byte offset within table
+    ws += [addu(T7, T4, T7)]                        # &table[i]
+    ws += [lw(T6, T7, 0)]                           # $t6 = colour word
+
+    # Framebuffer fill loop:
+    #   $t5 = 0xA0100000 (byte address of RDRAM frame buffer)
+    #   $t8 = 38400 (word-writes = 320 * 240 pixels / 2 per word)
+    ws += [lui(T5, 0xA010), ori(T5, T5, 0)]
+    # 38400 = 0x9600 word-writes (320*240 pixels / 2 per u32 word).  addiu
+    # sign-extends, so use xori $zero, imm which zero-extends the 16-bit imm.
+    ws += [xori_op(T8, ZR, 0x9600)]
+
+    fill_index = len(ws)
+    ws += [sw(T6, T5, 0)]                           # store colour word to fb
+    ws += [addiu(T5, T5, 4)]                        # advance cursor
+    ws += [addiu(T8, T8, -1)]                       # decrement
+    bne_fill_index = len(ws)
+    ws += [bne(T8, ZR, -4)]                         # back to fill
+    ws += [NOP]
+
+    # back to poll
+    j_poll_index = len(ws)
+    ws += [0]                                       # placeholder for j poll
+
+    # Patch branches now that we know all indices.
+    ws[beq_wait_index] = beq(T9, ZR, rel_branch(beq_wait_index, poll_index))
+    ws[bne_poll1_index] = bne(T3, T7, rel_branch(bne_poll1_index, poll_index))
+    # bne_wrap skip target = 1 word past the delay-slot, i.e. past the
+    # 1-word wrap body (`addiu $t2, $zero, 0`).
+    ws[bne_wrap_index] = bne(T2, T7, rel_branch(bne_wrap_index, bne_wrap_index + 2))
+    ws[j_poll_index] = j_to(j_poll_index, poll_index)
+
+    # Colour table lives at ROM offset 0x340 -> HLE copies to RSP mem offset
+    # 0x340 which the CPU fetches at KSEG1 0xA4000340.  Three u32 words,
+    # each holding a duplicated RGB555 halfword so a single `sw` writes two
+    # pixels of the same colour.
+    red_word   = (RED   & 0xFFFF) * 0x10001
+    green_word = (GREEN & 0xFFFF) * 0x10001
+    blue_word  = (BLUE  & 0xFFFF) * 0x10001
     code = words(ws)
     assert len(code) % 4 == 0 and len(code) > 0
-    assert len(code) <= 0xFC0, f"boot code ({len(code)} B) exceeds HLE-copied 0xFC0"
+    # Colour table sits at ROM offset 0x340, so boot code must fit before it.
+    assert len(code) <= 0x300, f"boot code ({len(code)} B) collides with colour table at 0x340"
     rom[0x40:0x40 + len(code)] = code
+
+    # Write the three-entry colour table (each is a duplicated RGB555 halfword).
+    table_bytes = v64_32(red_word) + v64_32(green_word) + v64_32(blue_word)
+    rom[0x340:0x340 + len(table_bytes)] = table_bytes
     return bytes(rom)
