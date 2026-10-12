@@ -5,13 +5,14 @@ import os
 godot_cpp_dir = os.environ.get("GODOT_CPP_DIR", "third_party/godot-cpp")
 env = SConscript(os.path.join(godot_cpp_dir, "SConstruct"))
 
-# libretro.h is the public Libretro API header; the copies that ship with
-# the pinned cores are identical, so either include tree works.
+# libretro.h (and libretro_vulkan.h) come from our own pinned
+# libretro-common submodule: a single header source, never the copies
+# vendored inside the cores' trees (fceumm's is current, mupen64plus-nx's
+# is an old antique, and neither tree owns the extension's build).
 env.Append(
 	CPPPATH=[
 		"src",
-		"third_party/libretro-fceumm/src/drivers/libretro/libretro-common/include",
-		"third_party/libretro-mupen64plus-nx/libretro-common/include",
+		"third_party/libretro-common/include",
 	],
 	LIBS=["dl"],
 )

@@ -188,13 +188,13 @@ roms:
 
 # Callback probe of a prebuilt core, no Godot involved: it drives the Libretro
 # API against the generated sample ROM and fails if the core stops feeding
-# frames. Both headers are pinned under tests/.
+# frames. libretro.h comes from the libretro-common submodule.
 .PHONY: test-probe
-test-probe: roms ## Drive a built FCEUmm core through the raw Libretro callbacks.
+test-probe: submodules roms ## Drive a built FCEUmm core through the raw Libretro callbacks.
 	@test "$(ARCH)" = "$(HOST_ARCH)" || { echo "test-probe dlopens the core with the host compiler: ARCH must equal the host architecture ($(HOST_ARCH))." >&2; exit 1; }
 	@test -f build/libretro/$(HOST_ARCH)/fceumm_libretro.so || { \
 		echo "Missing build/libretro/$(HOST_ARCH)/fceumm_libretro.so: make core-fceumm" >&2; exit 1; }
-	cc -O2 -Wall -Wextra -I tests tests/libretro_probe.c -ldl -o build/libretro_probe
+	cc -O2 -Wall -Wextra -I third_party/libretro-common/include tests/libretro_probe.c -ldl -o build/libretro_probe
 	./build/libretro_probe build/libretro/$(HOST_ARCH)/fceumm_libretro.so build/roms/sample.nes
 
 # Headless Godot tests of the extension and the cores, run against the
@@ -255,7 +255,7 @@ CHECK_CORES ?= $(CORE_IDS)
 
 .PHONY: check-stripped
 check-stripped: $(foreach c,$(CHECK_CORES),build/dist/$(ARCH)/$(c)_libretro.so) ## Strip and boot-check the ARCH cores named in CHECK_CORES.
-	$(call run_in_arch,$(ARCH)) 'cc -O2 -Wall -Wextra -I tests tests/libretro_probe.c -ldl -o build/libretro_probe'
+	$(call run_in_arch,$(ARCH)) 'cc -O2 -Wall -Wextra -I third_party/libretro-common/include tests/libretro_probe.c -ldl -o build/libretro_probe'
 	@for core in $(CHECK_CORES); do \
 		printf '== stripped symbols %s/%s\n' "$(ARCH)" "$$core"; \
 		$(call run_in_arch,$(ARCH)) "./build/libretro_probe --symbols build/dist/$(ARCH)/$${core}_libretro.so" || exit 1; \

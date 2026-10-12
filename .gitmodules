@@ -16,3 +16,6 @@
 [submodule "third_party/libretro-mgba"]
 	path = third_party/libretro-mgba
 	url = https://github.com/libretro/mgba.git
+[submodule "third_party/libretro-common"]
+	path = third_party/libretro-common
+	url = https://github.com/libretro/libretro-common.git

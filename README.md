@@ -21,15 +21,15 @@ This project ships precompiled Linux artifacts:
 - `src/`: the GDExtension sources (MIT, see `LICENSE`).
 - `SConstruct`: builds `build/godot_libretro/<arch>/<variant>/libgodot_libretro.so`
   from objects kept per architecture and variant under `build/obj/<arch>/<variant>/`.
-- `third_party/`: pinned submodules (godot-cpp + the five cores).
+- `third_party/`: pinned submodules (godot-cpp, the five cores, libretro-common).
 - `tools/Containerfile`: the Debian 12 (GCC 12) toolchain image, built once per
   architecture (`godot-libretro-toolchain:12-x86_64` and `:12-arm64`). Every
   build runs natively inside the image of its own architecture: newer host
   toolchains (measured GCC 15) miscompile the N64 core into a ~400x slower
   binary, and cross-compiling does not work for this stack (godot-cpp's
   SConstruct builds an explicit Environment that discards `CC`/`CXX`).
-- `tests/`: the pinned public `libretro.h`, the C callback probe that drives a
-  built core without Godot (`make test-probe`), and a minimal Godot project
+- `tests/`: the C callback probe that drives a built core without Godot
+  (`make test-probe`), and a minimal Godot project
   under `tests/godot/` that loads the cores through the extension
   (`make test-godot`).
 - `LICENSES/`: the upstream license files of each pinned dependency, taken
@@ -48,8 +48,8 @@ This project ships precompiled Linux artifacts:
 
 The cores are separate works loaded at runtime through the Libretro C API;
 the extension never links them, so their licenses stay inside their own
-binaries. `libretro.h` (API header only, no code linked) ships inside the
-cores' libretro-common trees.
+binaries. `libretro.h` (API header only, no code linked) is taken from
+our pinned `third_party/libretro-common` submodule.
 
 ## Building
 
