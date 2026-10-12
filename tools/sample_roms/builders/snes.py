@@ -1,4 +1,4 @@
-"""bsnes / SNES sample ROM (64 KiB loROM).
+"""bsnes sample ROM (64 KiB loROM).
 
 65816 in *emulation* mode (what the CPU resets to): 8-bit accumulator +
 index, direct page at $0000, absolute addresses in bank $00.  Code lives
@@ -171,7 +171,7 @@ def build() -> bytes:
     prg[0x40:0x40 + len(code)] = code
 
     header = bytearray(0x40)
-    header[0x00:0x14] = b"Libretro SNES Sample"
+    header[0x00:0x14] = b"bsnes Sample        "
     header[0x14:0x24] = b"Libretro          "
     header[0x24:0x29] = b"LIBRE"
     header[0x2A] = 0x33

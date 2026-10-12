@@ -66,8 +66,9 @@ static int16_t input_state_callback(unsigned port, unsigned device, unsigned ind
 int main(int argc, char **argv) {
 	/* --symbols CORE.so: only resolve what the host needs from the core. This is
 	 * the check that catches a stripped binary that lost its dynamic symbol
-	 * table, and it works for every core, including the ones that need more
-	 * environment support than this probe implements (Gambatte, N64). */
+	 * table, and it works for every core, including the ones that
+	 * need more environment support than this probe implements
+	 * (Gambatte, mupen64plus-next). */
 	int symbols_only = argc == 3 && strcmp(argv[1], "--symbols") == 0;
 	if (!symbols_only && argc != 3) {
 		fprintf(stderr, "Usage: %s CORE.so GAME\n       %s --symbols CORE.so\n", argv[0], argv[0]);

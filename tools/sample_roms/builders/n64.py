@@ -1,4 +1,4 @@
-"""mupen64plus-next / N64 sample ROM (.v64, 4 MiB).
+"""mupen64plus-next sample ROM (.v64, 4 MiB).
 
 Boot flow (mupen64plus-next + HLE bootrom):
 
@@ -44,23 +44,28 @@ def build() -> bytes:
     rom = bytearray(rom_size)
 
     # --- m64p_rom_header ------------------------------------------------
-    rom[0x00:0x04] = bytes([0x37, 0x80, 0x40, 0x12])  # .v64 signature
-    rom[0x04:0x08] = struct.pack(">I", 0x00040000)    # ClockRate
-    rom[0x08:0x0C] = struct.pack(">I", 0x0040)        # PC (fixed 0x40 by HLE)
-    rom[0x0C:0x10] = struct.pack(">I", 1)             # Release
-    rom[0x10:0x18] = b"\x00" * 8                      # CRC1, CRC2
-    rom[0x18:0x20] = b"\x00" * 8                      # Unknown[2]
-    rom[0x20:0x34] = b"Libretro N64 Sample "          # Name[20] (exactly 20 B)
-    rom[0x34:0x38] = b"\x00" * 4                      # unknown
-    rom[0x38:0x3C] = b"\x00" * 4                      # Manufacturer_ID
-    rom[0x3C:0x3E] = b"\x00" * 2                      # Cartridge_ID
-    # Country_code (0x3E) and Version (0x3F) are one 16-bit halfword; the
-    # .v64 byteswap swaps them on load, so what we write at file[0x3F] is
-    # what ROM_HEADER.Country_code reads after swap_copy_rom.  Country
-    # only matters for the Goldeneye tlb_speed_hacks path -- the boot code
-    # runs from RSP memory either way, so we keep it Demo (0).
-    rom[0x3E] = 0x00                                  # -> Version after swap
-    rom[0x3F] = 0x00                                  # -> Country_code (Demo)
+    # m64p_rom_header: build it in .z64 (big-endian native) form, then
+    # halfword-swap the whole block into .v64 file form -- swap_copy_rom
+    # undoes the swap on load, so the core reads each field exactly as
+    # written here.  (Writing the fields in .z64 order directly is what
+    # made the name come back byte-paired and Release/PC shifted.)
+    z64 = bytearray(0x40)
+    z64[0x00:0x04] = bytes([0x80, 0x37, 0x12, 0x40])  # .z64 signature
+    z64[0x04:0x08] = struct.pack(">I", 0x04000000)    # ClockRate
+    z64[0x08:0x0C] = struct.pack(">I", 0x40)          # PC (fixed 0x40 by HLE)
+    z64[0x0C:0x10] = struct.pack(">I", 1)             # Release
+    z64[0x10:0x18] = b"\x00" * 8                      # CRC1, CRC2
+    z64[0x18:0x20] = b"\x00" * 8                      # Unknown[2]
+    z64[0x20:0x34] = b"m64plus-next Sample "          # Name[20] (exactly 20 B)
+    z64[0x34:0x38] = b"\x00" * 4                      # unknown
+    z64[0x38:0x3C] = b"\x00" * 4                      # Manufacturer_ID
+    z64[0x3C:0x40] = b"\x00" * 4                      # Cartridge_ID, Country,
+                                                     # Version (Country stays
+                                                     # Demo 0: it only feeds
+                                                     # the tlb_speed_hacks path)
+    v64_header = bytearray(0x40)
+    v64_header[0::2], v64_header[1::2] = z64[1::2], z64[0::2]
+    rom[0x00:0x40] = v64_header
 
     # --- .v64 word encoding ---------------------------------------------
     # mupen's boot path is (a) swap_copy_rom byte-swaps each 16-bit halfword

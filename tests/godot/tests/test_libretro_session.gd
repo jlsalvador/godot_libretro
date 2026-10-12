@@ -131,8 +131,8 @@ func _run_test() -> void:
 	quit(0)
 
 
-## The sample NES ROM keeps a 16-bit little-endian counter at $6000, which is
-## the first thing FCEUmm writes to the sidecar.
+## The FCEUmm sample ROM keeps a 16-bit little-endian counter at $6000,
+## which is the first thing written to the sidecar.
 func _read_save_u16(path: String) -> int:
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null or file.get_length() < 2:

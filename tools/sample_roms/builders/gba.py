@@ -1,4 +1,4 @@
-"""mGBA / Game Boy Advance sample ROM (256 KiB).
+"""mGBA sample ROM (256 KiB).
 
 ARM7TDMI code at $0800:0020 (BIOS jumps there after the $0000 `b main`).
 The main loop:
@@ -6,7 +6,7 @@ The main loop:
   * enables BG0 in DISPCNT ($0400:0000 bit 8) and primes BG0PAL[0]
   * every ~60 VBlanks (~1 s) cycles BG0PAL[0] through 15-bit
     XBBBBBGGGGGRRRRR red -> green -> blue
-  * re-triggers GBA channel 2 (a legacy GB-style square wave at
+  * re-triggers channel 2 (a legacy square wave at
     $0400:006C-$0400:0071) so the pulse's length counter doesn't gate
     off; NR52 at $0400:0084 must stay enabled for the tone to sound
   * polls DISPSTAT ($0400:0004) bit 0 (VBlank flag), writes 1 to clear

@@ -19,7 +19,8 @@ VERSION ?= $(shell git -C $(ROOTDIR) describe --tags --exact-match 2>/dev/null |
 # One pinned Debian 12 (GCC 12) toolchain image per architecture, and every
 # build runs natively inside the image of its own architecture. Two reasons,
 # both measured: host toolchain drift changes the artifacts (GCC 15 compiles
-# the N64 core into a ~400x slower binary), and cross-compiling from the host
+# the Mupen64Plus-Next core into a ~400x slower binary), and
+# cross-compiling from the host
 # does not work for this stack (godot-cpp's SConstruct builds an explicit
 # Environment that discards CC/CXX overrides, so scons passed -march=armv8-a
 # to the x86-64 assembler: "bad value 'armv8-a' for '-march=' switch").
@@ -100,8 +101,8 @@ else
 		echo "Build it first: make toolchain-image ARCH=$(ARCH)" >&2; exit 1; }
 endif
 
-# Single level: the nested gitlink inside the N64 core tree is intentionally
-# left uninitialized.
+# Single level: the nested gitlink in the Mupen64Plus-Next core
+# tree is intentionally left uninitialized.
 .PHONY: submodules
 submodules:
 ifeq ($(IN_CONTAINER),1)
@@ -145,31 +146,31 @@ endef
 core_out = mkdir -p build/libretro/$(ARCH) && cp
 
 .PHONY: core-fceumm
-core-fceumm: submodules check-image-arch ## FCEUmm (NES) for ARCH.
+core-fceumm: submodules check-image-arch ## FCEUmm for ARCH.
 	$(call seed_core,libretro-fceumm)
 	$(container-run) 'make -C build/src/$(ARCH)/libretro-fceumm -f Makefile.libretro platform=unix -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-fceumm/fceumm_libretro.so build/libretro/$(ARCH)/'
 
 .PHONY: core-bsnes
-core-bsnes: submodules check-image-arch ## bsnes (SNES) for ARCH.
+core-bsnes: submodules check-image-arch ## bsnes for ARCH.
 	$(call seed_core,libretro-bsnes)
 	$(container-run) 'make -C build/src/$(ARCH)/libretro-bsnes -f Makefile platform=unix -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-bsnes/bsnes_libretro.so build/libretro/$(ARCH)/'
 
 # Angrylion software RSP plus the parallel RSP/RDP paths, the recipe that was
 # measured fastest on the headset. ARCH is the container's own uname -m.
 .PHONY: core-mupen64plus-next
-core-mupen64plus-next: submodules check-image-arch ## Mupen64Plus-Next (N64) for ARCH.
+core-mupen64plus-next: submodules check-image-arch ## Mupen64Plus-Next for ARCH.
 	$(call seed_core,libretro-mupen64plus-nx)
 	$(container-run) 'make -C build/src/$(ARCH)/libretro-mupen64plus-nx -f Makefile platform=unix ARCH=$(CONTAINER_UNAME) HAVE_THR_AL=1 HAVE_PARALLEL_RSP=1 HAVE_PARALLEL_RDP=1 LLE=1 -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-mupen64plus-nx/mupen64plus_next_libretro.so build/libretro/$(ARCH)/'
 
 .PHONY: core-gambatte
-core-gambatte: submodules check-image-arch ## Gambatte (GB/GBC) for ARCH.
+core-gambatte: submodules check-image-arch ## Gambatte for ARCH.
 	$(call seed_core,libretro-gambatte)
 	$(container-run) 'make -C build/src/$(ARCH)/libretro-gambatte -f Makefile.libretro platform=unix -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-gambatte/gambatte_libretro.so build/libretro/$(ARCH)/'
 
 # The CMake binary directory is outside the source copy and keyed by
 # architecture, so no configuration can survive an architecture switch.
 .PHONY: core-mgba
-core-mgba: submodules check-image-arch ## mGBA (GB/GBC/GBA) for ARCH.
+core-mgba: submodules check-image-arch ## mGBA for ARCH.
 	$(call seed_core,libretro-mgba)
 	$(container-run) 'cmake -S build/src/$(ARCH)/libretro-mgba -B build/cmake/$(ARCH)/mgba \
 		-DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF \

@@ -25,8 +25,8 @@ This project ships precompiled Linux artifacts:
 - `tools/Containerfile`: the Debian 12 (GCC 12) toolchain image, built once per
   architecture (`godot-libretro-toolchain:12-x86_64` and `:12-arm64`). Every
   build runs natively inside the image of its own architecture: newer host
-  toolchains miscompile the N64 core badly, and cross-compiling does not
-  work for this stack (godot-cpp's
+  toolchains miscompile the Mupen64Plus-Next core badly, and
+  cross-compiling does not work for this stack (godot-cpp's
   SConstruct builds an explicit Environment that discards `CC`/`CXX`).
 - `tests/`: the C callback probe that drives a built core without Godot
   (`make test-probe`), and a minimal Godot project
@@ -52,7 +52,7 @@ our pinned `third_party/libretro-common` submodule.
 ## Building
 
 Prerequisites: podman, and the submodules at their pinned commits (single
-level: the nested gitlink inside the N64 core tree is intentionally left
+level: the nested gitlink inside the Mupen64Plus-Next core tree is
 uninitialized). The Makefile initializes them for you.
 
 ```

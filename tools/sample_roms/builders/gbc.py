@@ -1,4 +1,4 @@
-"""Gambatte / Game Boy Color sample ROM (32 KiB, MBC1 + battery SRAM).
+"""Gambatte sample ROM (32 KiB, MBC1 + battery SRAM).
 
 Cartridge layout:
   * Header byte $147 = $03 -> MBC1 + Battery + SRAM

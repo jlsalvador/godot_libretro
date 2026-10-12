@@ -1,4 +1,4 @@
-"""FCEUmm / NES sample ROM (NROM-128 with battery-backed SRAM).
+"""FCEUmm sample ROM (NROM-128 with battery-backed SRAM).
 
 6502 program, all in the 16 KiB PRG bank at $8000-$BFFF:
 
@@ -16,7 +16,7 @@
 The 2 KiB SRAM at $6000-$67FF is the standard NROM battery save area that
 FCEUmm serialises to the `.sram` sidecar via retro_get_memory_data().
 
-NES palette entries chosen for the R/G/B cycle: $16 red, $1B green, $22
+Palette entries chosen for the R/G/B cycle: $16 red, $1B green, $22
 blue (approximate primaries of the composite encoder).
 """
 
