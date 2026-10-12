@@ -25,8 +25,8 @@ This project ships precompiled Linux artifacts:
 - `tools/Containerfile`: the Debian 12 (GCC 12) toolchain image, built once per
   architecture (`godot-libretro-toolchain:12-x86_64` and `:12-arm64`). Every
   build runs natively inside the image of its own architecture: newer host
-  toolchains (measured GCC 15) miscompile the N64 core into a ~400x slower
-  binary, and cross-compiling does not work for this stack (godot-cpp's
+  toolchains miscompile the N64 core badly, and cross-compiling does not
+  work for this stack (godot-cpp's
   SConstruct builds an explicit Environment that discards `CC`/`CXX`).
 - `tests/`: the C callback probe that drives a built core without Godot
   (`make test-probe`), and a minimal Godot project
@@ -88,8 +88,7 @@ toolchain containers pass the identical one.
 
 ## Stripping, symbols and the verification gate
 
-Cores ship stripped (`strip --strip-unneeded`), measured savings of 2-11% per
-core (mupen64plus_next 8.3 MB to 7.4 MB, gambatte 4.9 MB to 4.8 MB). Nothing is
+Cores ship stripped (`strip --strip-unneeded`). Nothing is
 packaged until it has booted:
 
 - every stripped core is resolved symbol by symbol through
@@ -107,10 +106,7 @@ stripped cores before anything is zipped.
 
 The `template_debug` extension variant keeps full DWARF (`debug_symbols=yes`,
 `-g2`) so a crash on the headset resolves to file and line; `template_release`
-links with `-s`. Measured on x86_64: 522 KB stripped release versus 10.8 MB for
-the debug variant, which is why the extension zip is around 9 MB rather than
-1 MB. Building the debug variant with `debug_symbols=no` gives 1.1 MB with the
-symbol table only, and no line information.
+links with `-s`.
 
 ## Releases
 
@@ -119,6 +115,3 @@ template_release) and upload the zips with an md5 manifest.
 `.github/workflows/build.yml` starts the toolchain image of each architecture
 and runs `make IN_CONTAINER=1 <target>` inside it, so no build command lives in
 the YAML. The arm64 jobs run that image under qemu on the amd64 runner.
-
-This repository has no remote yet, so the YAML has never been executed by a
-runner. Only the commands it calls are validated locally.
