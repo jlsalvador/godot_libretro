@@ -195,12 +195,13 @@ roms:
 # Callback probe of a prebuilt core, no Godot involved: it drives the Libretro
 # API against the generated sample ROM and fails if the core stops feeding
 # frames. libretro.h comes from the libretro-common submodule.
+build/libretro_probe: tests/libretro_probe.c third_party/libretro-common/include/libretro.h
+	cc -O2 -Wall -Wextra -I third_party/libretro-common/include $< -ldl -o $@
 .PHONY: test-probe
-test-probe: submodules roms ## Drive a built FCEUmm core through the raw Libretro callbacks.
+test-probe: build/libretro_probe submodules roms ## Drive a built FCEUmm core through the raw Libretro callbacks.
 	@test "$(ARCH)" = "$(HOST_ARCH)" || { echo "test-probe dlopens the core with the host compiler: ARCH must equal the host architecture ($(HOST_ARCH))." >&2; exit 1; }
 	@test -f build/libretro/$(HOST_ARCH)/fceumm_libretro.so || { \
 		echo "Missing build/libretro/$(HOST_ARCH)/fceumm_libretro.so: make core-fceumm" >&2; exit 1; }
-	cc -O2 -Wall -Wextra -I third_party/libretro-common/include tests/libretro_probe.c -ldl -o build/libretro_probe
 	./build/libretro_probe build/libretro/$(HOST_ARCH)/fceumm_libretro.so build/roms/sample.nes
 
 # Headless Godot tests of the extension and the cores, run against the
