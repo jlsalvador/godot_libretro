@@ -122,6 +122,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Init submodules (single level)
+        run: git submodule update --init
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:

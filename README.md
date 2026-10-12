@@ -11,8 +11,8 @@ This project ships precompiled Linux artifacts:
   platform and variant (extract over a Godot project root; lands in
   `addons/godot_libretro/.bin/...`).
 - `godot_libretro-linux-<arch>-<core>-<version>.zip`: one core per
-  architecture, containing the core `.so`, its `LICENSE_<core>` file and the
-  original sample ROM that core boots.
+  architecture, containing the core `.so`, its `LICENSE` (the license file
+  of its pinned submodule tree) and the original sample ROM that core boots.
   Consumers discover cores at runtime from a `cores/` folder beside the
   executable (drop the `.so` files there, any mix of cores and platforms).
 
@@ -32,19 +32,17 @@ This project ships precompiled Linux artifacts:
   (`make test-probe`), and a minimal Godot project
   under `tests/godot/` that loads the cores through the extension
   (`make test-godot`).
-- `LICENSES/`: the upstream license files of each pinned dependency, taken
-  verbatim from the repos at their pinned commits.
 
 ## Cores and licenses
 
 | Core | Artifact | License file |
 |---|---|---|
-| FCEUmm | `fceumm_libretro.so` | `LICENSES/LICENSE_fceumm` |
-| bsnes | `bsnes_libretro.so` | `LICENSES/LICENSE_bsnes` |
-| Mupen64Plus-Next | `mupen64plus_next_libretro.so` | `LICENSES/LICENSE_mupen64plus_next` |
-| Gambatte | `gambatte_libretro.so` | `LICENSES/LICENSE_gambatte` |
-| mGBA | `mgba_libretro.so` | `LICENSES/LICENSE_mgba` |
-| godot-cpp (linked) | `libgodot_libretro.so` | `LICENSES/LICENSE_godot_cpp` |
+| FCEUmm | `fceumm_libretro.so` | `third_party/libretro-fceumm/Copying` |
+| bsnes | `bsnes_libretro.so` | `third_party/libretro-bsnes/LICENSE.txt` |
+| Mupen64Plus-Next | `mupen64plus_next_libretro.so` | `third_party/libretro-mupen64plus-nx/LICENSE` |
+| Gambatte | `gambatte_libretro.so` | `third_party/libretro-gambatte/COPYING` |
+| mGBA | `mgba_libretro.so` | `third_party/libretro-mgba/LICENSE` |
+| godot-cpp (linked) | `libgodot_libretro.so` | `third_party/godot-cpp/LICENSE.md` |
 
 The cores are separate works loaded at runtime through the Libretro C API;
 the extension never links them, so their licenses stay inside their own

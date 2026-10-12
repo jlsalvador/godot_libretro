@@ -55,6 +55,11 @@ endif
 
 ARCHES := x86_64 arm64
 CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba
+# Each core's submodule tree, and the candidate names of the license file
+# the zip rule stages in the archive as LICENSE (first hit wins; if none
+# exists the packaging fails).
+CORE_DIRS := libretro-fceumm libretro-bsnes libretro-mupen64plus-nx libretro-gambatte libretro-mgba
+CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
 CORE_SOS := $(addsuffix _libretro.so,$(CORE_IDS))
 # The sample ROM each core boots, from tools/sample_roms.
 CORE_ROMS := sample.nes sample.sfc sample.v64 sample.gbc sample.gba
@@ -288,7 +293,7 @@ check-stripped-godot: extension roms ## Load the stripped host-arch cores throug
 	done
 
 # Zips, from the matrix above. One zip per core per architecture (the core .so,
-# its upstream license and its sample ROM, all at the archive root), plus a
+# its license staged as LICENSE and its sample ROM, all at the archive root), plus a
 # single extension zip holding every architecture and variant in the addons/
 # layout a Godot project can extract over its root.
 $(EXT_ZIP): $(EXT_LIBS) LICENSE
@@ -303,14 +308,27 @@ $(EXT_ZIP): $(EXT_LIBS) LICENSE
 	mkdir -p build/package/addons/godot_libretro && cp LICENSE build/package/addons/godot_libretro/
 	$(package-run) 'cd build/package && zip -9 -rX /work/$@ addons'
 
-# Generated rules: one core zip per architecture per core.
+# Generated rules: one core zip per architecture per core (the core .so, the
+# license file of its pinned tree — the first of CORE_LICENSE_CANDIDATES
+# that exists, staged as LICENSE — and the sample ROM, all at the archive
+# root).
 define core_zip_rule
 dist/godot_libretro-linux-$(1)-$(word $(2),$(CORE_IDS))-$(VERSION).zip: \
 		build/dist/$(1)/$(word $(2),$(CORE_SOS)) \
-		LICENSES/LICENSE_$(word $(2),$(CORE_IDS)) \
 		build/roms/$(word $(2),$(CORE_ROMS))
-	@mkdir -p dist
-	$$(package-run) 'zip -9 -j -X /work/$$@ $$^'
+	@mkdir -p dist build/package/core_$(word $(2),$(CORE_IDS)); \
+	if [ -f third_party/$(word $(2),$(CORE_DIRS))/LICENSE ]; then \
+		cp third_party/$(word $(2),$(CORE_DIRS))/LICENSE build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
+	elif [ -f third_party/$(word $(2),$(CORE_DIRS))/LICENSE.txt ]; then \
+		cp third_party/$(word $(2),$(CORE_DIRS))/LICENSE.txt build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
+	elif [ -f third_party/$(word $(2),$(CORE_DIRS))/COPYING ]; then \
+		cp third_party/$(word $(2),$(CORE_DIRS))/COPYING build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
+	elif [ -f third_party/$(word $(2),$(CORE_DIRS))/Copying ]; then \
+		cp third_party/$(word $(2),$(CORE_DIRS))/Copying build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
+	else \
+		echo "No license file among $(CORE_LICENSE_CANDIDATES) in third_party/$(word $(2),$(CORE_DIRS))" >&2; exit 1; \
+	fi
+	$$(package-run) 'zip -9 -j -X /work/$$@ build/dist/$(1)/$(word $(2),$(CORE_SOS)) build/roms/$(word $(2),$(CORE_ROMS)) build/package/core_$(word $(2),$(CORE_IDS))/LICENSE'
 endef
 $(foreach a,$(ARCHES),$(foreach i,$(CORE_INDEX),$(eval $(call core_zip_rule,$(a),$(i)))))
 
