@@ -39,10 +39,10 @@ jobs:
       ELF_ARCH: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86-64' }}
       IMAGE_NAME: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - name: Init submodules (single level)
-        run: git submodule update --init
+      - uses: actions/checkout@v7
+        with:
+          submodules: shallow
+      - uses: docker/setup-qemu-action@v4
       - name: Build the toolchain image
         run: >-
           docker build --platform linux/$OCI_PLATFORM
@@ -59,7 +59,7 @@ jobs:
           for so in $(find build/godot_libretro/${{ matrix.arch }} -name '*.so'); do
             file -b "$so" | grep -q "$ELF_ARCH" || { echo "$so is not $ELF_ARCH" >&2; exit 1; }
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: extension-${{ matrix.arch }}
           path: build/godot_libretro/${{ matrix.arch }}/
@@ -75,10 +75,10 @@ jobs:
       ELF_ARCH: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86-64' }}
       IMAGE_NAME: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - name: Init submodules (single level)
-        run: git submodule update --init
+      - uses: actions/checkout@v7
+        with:
+          submodules: shallow
+      - uses: docker/setup-qemu-action@v4
       - name: Build the toolchain image
         run: >-
           docker build --platform linux/$OCI_PLATFORM
@@ -99,7 +99,7 @@ jobs:
           for so in $(find build/libretro/${{ matrix.arch }} build/dist/${{ matrix.arch }} -name '*.so'); do
             file -b "$so" | grep -q "$ELF_ARCH" || { echo "$so is not $ELF_ARCH" >&2; exit 1; }
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: core-${{ matrix.core }}-${{ matrix.arch }}
           path: |
@@ -109,10 +109,10 @@ jobs:
   roms:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the sample ROMs
         run: make roms
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: roms
           path: build/roms/
@@ -121,11 +121,11 @@ jobs:
     needs: [extension, cores, roms]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Init submodules (single level)
-        run: git submodule update --init
+      - uses: actions/checkout@v7
+        with:
+          submodules: shallow
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: .
           merge-multiple: true
@@ -136,7 +136,7 @@ jobs:
           docker run --rm -v "$PWD":/work -w /work
           ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-x86_64
           make IN_CONTAINER=1 package SKIP_VERIFY=1 VERSION="${GITHUB_REF_NAME:-local}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: package
           path: |
@@ -148,9 +148,9 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download package artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: package
           path: dist
