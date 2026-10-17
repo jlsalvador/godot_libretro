@@ -9,8 +9,6 @@
 # arm64 containers run under qemu on the amd64 runner (measured locally: a
 # CPU-bound gzip of 200 MB took 0.71 s native and 2.26 s emulated).
 #
-# NOTE: this repository has no remote yet, so the YAML itself has never been
-# executed by a runner. The commands inside it are the ones validated locally.
 name: build
 
 on:
@@ -46,7 +44,7 @@ jobs:
       - name: Build the toolchain image
         run: >-
           docker build --platform linux/$OCI_PLATFORM
-          -t "$IMAGE_NAME" tools/
+          -f Containerfile -t "$IMAGE_NAME" tools/
       - name: Build the extension
         run: |
           for target in template_debug template_release; do
@@ -56,7 +54,9 @@ jobs:
           done
       - name: Check the artifact architecture
         run: |
-          for so in $(find build/godot_libretro/${{ matrix.arch }} -name '*.so'); do
+          sos=$(find build/godot_libretro/${{ matrix.arch }} -name '*.so')
+          [ -n "$sos" ] || { echo "No .so artifacts in build/godot_libretro" >&2; exit 1; }
+          for so in $sos; do
             file -b "$so" | grep -q "$ELF_ARCH" || { echo "$so is not $ELF_ARCH" >&2; exit 1; }
           done
       - uses: actions/upload-artifact@v7
@@ -66,6 +66,7 @@ jobs:
 
   cores:
     strategy:
+      fail-fast: false
       matrix:
         core: [fceumm, bsnes, mupen64plus-next, gambatte, mgba]
         arch: [x86_64, arm64]
@@ -82,7 +83,7 @@ jobs:
       - name: Build the toolchain image
         run: >-
           docker build --platform linux/$OCI_PLATFORM
-          -t "$IMAGE_NAME" tools/
+          -f Containerfile -t "$IMAGE_NAME" tools/
       - name: Build the core
         run: >-
           docker run --rm --platform linux/$OCI_PLATFORM \
@@ -92,11 +93,12 @@ jobs:
         run: >-
           docker run --rm --platform linux/$OCI_PLATFORM \
             -v "$PWD":/work -w /work "$IMAGE_NAME" \
-            make IN_CONTAINER=1 roms check-stripped ARCH=${{ matrix.arch }}
-            CHECK_CORES=${{ matrix.core }}
+            make IN_CONTAINER=1 roms check-stripped ARCH=${{ matrix.arch }} CHECK_CORES=${{ matrix.core }}
       - name: Check the artifact architecture
         run: |
-          for so in $(find build/libretro/${{ matrix.arch }} build/dist/${{ matrix.arch }} -name '*.so'); do
+          sos=$(find build/libretro/${{ matrix.arch }} build/dist/${{ matrix.arch }} -name '*.so')
+          [ -n "$sos" ] || { echo "No .so artifacts in build/libretro or build/dist" >&2; exit 1; }
+          for so in $sos; do
             file -b "$so" | grep -q "$ELF_ARCH" || { echo "$so is not $ELF_ARCH" >&2; exit 1; }
           done
       - uses: actions/upload-artifact@v7
@@ -130,12 +132,12 @@ jobs:
           path: .
           merge-multiple: true
       - name: Build the host toolchain image
-        run: docker build --platform linux/amd64 -t ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-x86_64 tools/
+        run: docker build --platform linux/amd64 -f Containerfile -t ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-x86_64 tools/
       - name: Package zips
         run: >-
           docker run --rm -v "$PWD":/work -w /work
           ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-x86_64
-          make IN_CONTAINER=1 package SKIP_VERIFY=1 VERSION="${GITHUB_REF_NAME:-local}"
+          make IN_CONTAINER=1 package SKIP_VERIFY=1 VERSION="${GITHUB_REF_NAME//\//-}"
       - uses: actions/upload-artifact@v7
         with:
           name: package
