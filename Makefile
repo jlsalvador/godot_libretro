@@ -1,20 +1,74 @@
+# Build, verification and packaging of godot_libretro.
+#
+# Dependency model. Every artifact is a real file with exactly one rule, and
+# the architecture is part of its path, so a single make invocation sees the
+# whole graph and nothing is built by two rules or by recursive sub-makes:
+#
+#   build/libretro[-debug]/<arch>/<core>_libretro.so   core builds
+#   build/godot_libretro/<arch>/<debug|release>/...    GDExtension builds
+#   build/dist/<arch>/<core>_libretro.so               stripped release cores
+#   build/checks/<arch>/{stripped,debug}/<core>.ok     verification stamps
+#   dist/*.zip, dist/manifest.md5                      packages
+#
+# The core and extension rules always run their (incremental) inner build, but
+# only replace the output when its content changed, so everything downstream
+# is rebuilt only when a binary really changed. The ARCH variable only picks
+# which files the convenience targets (cores, core-fceumm, check-stripped...)
+# ask for; the *-all targets and `package` cover every architecture.
+#
+# Outer parallelism (make -j) is correct, but every inner build already uses
+# -j$(JOBS), so `make -j` oversubscribes the CPU: prefer plain `make`.
+
+MAKEFLAGS += --no-builtin-rules
+.SUFFIXES:
+.DELETE_ON_ERROR:
+.SECONDEXPANSION:
+
 ROOTDIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+# IMAGE, IMAGE_TAG, PODMAN, MOUNT_OPTS, TARGET, ARCH, JOBS, VERSION, GODOT,
+# DEBUG_SYMBOLS, SKIP_VERIFY, PREBUILT and CHECK_CORES take an exported
+# environment value over the defaults below, so pass them on the make command line.
 IMAGE ?= godot-libretro-toolchain
 IMAGE_TAG ?= 12
-HOST_ARCH := $(shell uname -m)
-ARCH ?= $(HOST_ARCH)
+PODMAN ?= podman
+# Extra options appended to the bind mount of the repository, e.g.
+# MOUNT_OPTS=:Z on SELinux hosts (Fedora/RHEL), where the mount is otherwise denied.
+MOUNT_OPTS ?=
+# Extension variant built by the `extension` convenience target.
 TARGET ?= template_debug
+
+# uname -m reports aarch64 on native arm64 Linux; we name it arm64 everywhere
+HOST_ARCH := $(patsubst aarch64,arm64,$(shell uname -m))
+ARCH ?= $(HOST_ARCH)
+
+# Evaluated once (a recursive ?= would rerun the shell at every expansion).
+ifndef JOBS
+JOBS := $(shell nproc)
+endif
+ifndef VERSION
+VERSION := $(shell git -C $(ROOTDIR) describe --tags --exact-match 2>/dev/null || git -C $(ROOTDIR) rev-parse --short HEAD 2>/dev/null || echo local)
+endif
+ifndef GODOT
+GODOT := $(shell command -v godot 2>/dev/null)
+endif
+
 # Debug variants keep full DWARF (-g2 from godot-cpp) so a crash on the headset
 # resolves to file and line; the release variant links with -s. Measured on the
 # x86_64 addon: 522 KB stripped release, 10.8 MB with DWARF, 1.1 MB with the
-# symbol table only.
-ifeq ($(TARGET),template_release)
-DEBUG_SYMBOLS ?= no
-else
-DEBUG_SYMBOLS ?= yes
-endif
-JOBS ?= $(shell nproc)
-VERSION ?= $(shell git -C $(ROOTDIR) describe --tags --exact-match 2>/dev/null || git -C $(ROOTDIR) rev-parse --short HEAD 2>/dev/null || echo local)
+# symbol table only. DEBUG_SYMBOLS=yes|no overrides both variants.
+DEBUG_SYMBOLS_debug := yes
+DEBUG_SYMBOLS_release := no
+ext_symbols = $(or $(DEBUG_SYMBOLS),$(DEBUG_SYMBOLS_$(1)))
+
+# SKIP_VERIFY=1 drops the verification gate from the packages, and implies
+# PREBUILT: the core binaries (build/libretro*/) and the extension libraries
+# (build/godot_libretro/) already exist, e.g. downloaded CI artifacts built
+# natively per architecture, and no rule rebuilds them (a foreign architecture
+# cannot be built in the current container anyway). PREBUILT=0 builds them.
+SKIP_VERIFY ?=
+PREBUILT ?= $(SKIP_VERIFY)
+SKIP_GATES := $(filter 1,$(SKIP_VERIFY))
 
 # One pinned Debian 12 (GCC 12) toolchain image per architecture, and every
 # build runs natively inside the image of its own architecture. Two reasons,
@@ -24,20 +78,17 @@ VERSION ?= $(shell git -C $(ROOTDIR) describe --tags --exact-match 2>/dev/null |
 # does not work for this stack (godot-cpp's SConstruct builds an explicit
 # Environment that discards CC/CXX overrides, so scons passed -march=armv8-a
 # to the x86-64 assembler: "bad value 'armv8-a' for '-march=' switch").
-ifeq ($(ARCH),x86_64)
-CONTAINER_UNAME := x86_64
-OCI_PLATFORM := amd64
-else ifeq ($(ARCH),arm64)
-CONTAINER_UNAME := aarch64
-OCI_PLATFORM := arm64
-else
+ARCHES := x86_64 arm64
+oci_x86_64 := amd64
+oci_arm64 := arm64
+uname_x86_64 := x86_64
+uname_arm64 := aarch64
+
+ifeq ($(filter $(ARCH),$(ARCHES)),)
 $(error Unsupported target architecture: $(ARCH))
 endif
 
-IMAGE_NAME := $(IMAGE):$(IMAGE_TAG)-$(ARCH)
-HOST_IMAGE_NAME := $(IMAGE):$(IMAGE_TAG)-$(HOST_ARCH)
-
-PODMAN ?= podman
+image_of = $(IMAGE):$(IMAGE_TAG)-$(1)
 
 # IN_CONTAINER=1 runs the recipes in the current shell: CI starts the toolchain
 # container itself and calls make inside it, so the Makefile must not nest a
@@ -45,307 +96,370 @@ PODMAN ?= podman
 # is architecture-neutral and the image is the only place guaranteed to carry
 # the same zip and md5sum as every other build.
 ifeq ($(IN_CONTAINER),1)
-container-run = bash -c
-package-run = bash -c
-image-uname = uname -m
+run_in = bash -c
+check_image = :
 else
-container-run = $(PODMAN) run --rm --platform linux/$(OCI_PLATFORM) --network none -v $(ROOTDIR):/work -w /work $(IMAGE_NAME) bash -c
-package-run = $(PODMAN) run --rm --network none -v $(ROOTDIR):/work -w /work $(HOST_IMAGE_NAME) bash -c
-image-uname = $(PODMAN) run --rm --platform linux/$(OCI_PLATFORM) $(IMAGE_NAME) uname -m
+run_in = $(PODMAN) run --rm --platform linux/$(oci_$(1)) --network none -v $(ROOTDIR):/work$(MOUNT_OPTS) -w /work $(call image_of,$(1)) bash -c
+# A wrong-architecture image would build wrong-architecture artifacts without
+# any error (the recipes never name a compiler), so refuse before building.
+check_image = actual=$$($(PODMAN) run --rm --platform linux/$(oci_$(1)) $(call image_of,$(1)) uname -m); \
+	[ "$$actual" = "$(uname_$(1))" ] || { \
+		echo "Image $(call image_of,$(1)) runs '$$actual', expected $(uname_$(1))." >&2; \
+		echo "Build it first: make toolchain-image-$(1)" >&2; exit 1; }
 endif
+package_run = $(call run_in,$(HOST_ARCH))
 
-ARCHES := x86_64 arm64
+# Libretro cores. Each has its submodule tree, a sample ROM (from
+# tools/sample_roms) and, for the make-based ones, the arguments of its
+# upstream build. The license file staged in the zips is the first of
+# CORE_LICENSE_CANDIDATES present in the pinned tree (none: packaging fails).
 CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba
-# Each core's submodule tree, and the candidate names of the license file
-# the zip rule stages in the archive as LICENSE (first hit wins; if none
-# exists the packaging fails).
-CORE_DIRS := libretro-fceumm libretro-bsnes libretro-mupen64plus-nx libretro-gambatte libretro-mgba
-CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
 CORE_SOS := $(addsuffix _libretro.so,$(CORE_IDS))
-# The sample ROM each core boots, from tools/sample_roms.
-CORE_ROMS := sample.nes sample.sfc sample.v64 sample.gbc sample.gba
-CORE_INDEX := 1 2 3 4 5
+CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
 
+core_dir_fceumm := libretro-fceumm
+core_dir_bsnes := libretro-bsnes
+core_dir_mupen64plus_next := libretro-mupen64plus-nx
+core_dir_gambatte := libretro-gambatte
+core_dir_mgba := libretro-mgba
+
+core_rom_fceumm := sample.nes
+core_rom_bsnes := sample.sfc
+core_rom_mupen64plus_next := sample.v64
+core_rom_gambatte := sample.gbc
+core_rom_mgba := sample.gba
+
+core_make_args_fceumm := -f Makefile.libretro platform=unix
+core_make_args_bsnes := -f Makefile platform=unix
+# Angrylion software RSP plus the parallel RSP/RDP paths, the recipe that was
+# measured fastest on the headset. ARCH is the container's own uname -m.
+core_make_args_mupen64plus_next = -f Makefile platform=unix ARCH=$(uname_$(1)) HAVE_THR_AL=1 HAVE_PARALLEL_RSP=1 HAVE_PARALLEL_RDP=1 LLE=1
+core_make_args_gambatte := -f Makefile.libretro platform=unix
+
+# The bare callback probe only boots the cores that need nothing beyond the
+# video/audio/input callbacks: measured, mupen64plus_next crashes (it asks for
+# the host Vulkan device) and gambatte rejects the ROM (it needs GET_CAN_DUPE),
+# both of which the Godot harness does provide. So those two are verified
+# through --symbols only, and through the extension in check-stripped-godot.
+BOOT_CORES := fceumm bsnes mgba
+
+# CHECK_CORES narrows the gate to the cores this invocation actually built: CI
+# compiles one core per job, so a job must not demand that the other four exist.
+CHECK_CORES ?= $(CORE_IDS)
+
+# Release and debug variants of the core builds. The debug one is a second copy
+# of the pinned tree, built with each core's upstream debug build (DEBUG=1 ->
+# -O0 -g; CMake Debug for mGBA) so the debug zips carry DWARF and crashes
+# resolve to file and line. The release trees and the stripped dist/ copies are
+# untouched.
+mode_src_release := build/src
+mode_src_debug := build/src-debug
+mode_cmake_release := build/cmake
+mode_cmake_debug := build/cmake-debug
+mode_cmake_type_release := Release
+mode_cmake_type_debug := Debug
+mode_flags_release :=
+mode_flags_debug := DEBUG=1
+
+# Files of the matrix.
 EXT_LIBS := $(foreach a,$(ARCHES),$(foreach v,debug release,build/godot_libretro/$(a)/$(v)/libgodot_libretro.so))
-CORE_ZIPS := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),dist/godot_libretro-linux-$(a)-$(c)-$(VERSION).zip))
+CORE_SO_RELEASE := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/libretro/$(a)/$(c)_libretro.so))
+CORE_SO_DEBUG := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/libretro-debug/$(a)/$(c)_libretro.so))
+DIST_SOS := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/dist/$(a)/$(c)_libretro.so))
+PROBES := $(foreach a,$(ARCHES),build/probe/$(a)/libretro_probe)
+LICENSES := $(foreach c,$(CORE_IDS),build/licenses/$(c)/LICENSE)
+CHECK_STRIPPED_ALL := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/checks/$(a)/stripped/$(c).ok))
+CHECK_DEBUG_ALL := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/checks/$(a)/debug/$(c).ok))
+CORE_ZIPS_RELEASE := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),dist/godot_libretro-linux-$(a)-$(c)-release-$(VERSION).zip))
+CORE_ZIPS_DEBUG := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),dist/godot_libretro-linux-$(a)-$(c)-debug-$(VERSION).zip))
 EXT_ZIP := dist/godot_libretro-linux-extension-$(VERSION).zip
 MANIFEST := dist/manifest.md5
 
-.PHONY: all toolchain-image toolchain-images submodules check-image-arch \
-	extension extension-all \
+ROMS_STAMP := build/roms/.stamp
+LIBRETRO_H := third_party/libretro-common/include/libretro.h
+HOST_PROBE := build/probe-host/libretro_probe
+HOST_EXT_DEBUG := build/godot_libretro/$(HOST_ARCH)/debug/libgodot_libretro.so
+GODOT_PROJECT := tests/godot
+
+CHECK_IMAGE_TARGETS := $(addprefix check-image-,$(ARCHES))
+TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
+
+.PHONY: FORCE all help release package clean \
+	submodules toolchain-image toolchain-images $(TOOLCHAIN_TARGETS) \
+	check-image-arch $(CHECK_IMAGE_TARGETS) \
+	extension extension-variants extension-all \
 	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba \
-	cores cores-all roms test-probe test-godot release package clean \
-	check-stripped check-stripped-all check-stripped-godot
+	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba \
+	cores cores-all cores-debug cores-debug-all roms \
+	test-probe test-godot \
+	check-stripped check-stripped-all check-stripped-godot check-debug check-debug-all \
+	release-zips debug-zips
+FORCE:
 
-GODOT ?= $(shell command -v godot 2>/dev/null)
+# Targets whose stem is "<arch>/<...>/<core>" or "<arch>/<variant>" or
+# "<arch>-<core>" tell their parts apart with these (used in recipes and in
+# secondary expansion).
+stem_arch = $(firstword $(subst /, ,$*))
+stem_core = $(lastword $(subst /, ,$*))
+zip_arch = $(firstword $(subst -, ,$*))
+zip_core = $(word 2,$(subst -, ,$*))
 
-all: extension-all cores-all roms
+##@ General
 
-toolchain-image:
-	$(PODMAN) build --platform linux/$(OCI_PLATFORM) -t $(IMAGE_NAME) $(ROOTDIR)/tools
+all: extension-all cores-all roms ## Build the full matrix: extensions, cores and sample ROMs.
+help: ## Display this help.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
-toolchain-images:
-	$(MAKE) toolchain-image ARCH=x86_64
-	$(MAKE) toolchain-image ARCH=arm64
+##@ Build
 
-# A wrong-architecture image would build wrong-architecture artifacts without
-# any error (the recipes never name a compiler), so refuse before building.
-.PHONY: check-image-arch
-check-image-arch:
-ifeq ($(IN_CONTAINER),1)
-	@:
-else
-	@actual=$$( $(image-uname) ); \
-	[ "$$actual" = "$(CONTAINER_UNAME)" ] || { \
-		echo "Image $(IMAGE_NAME) runs '$$actual', expected $(CONTAINER_UNAME)." >&2; \
-		echo "Build it first: make toolchain-image ARCH=$(ARCH)" >&2; exit 1; }
-endif
+$(TOOLCHAIN_TARGETS): toolchain-image-%:
+	$(PODMAN) build --platform linux/$(oci_$*) -t $(call image_of,$*) $(ROOTDIR)/tools
+
+toolchain-image: toolchain-image-$(ARCH) ## Build the toolchain image for ARCH.
+toolchain-images: $(TOOLCHAIN_TARGETS) ## Build both toolchain images.
+
+$(CHECK_IMAGE_TARGETS): check-image-%:
+	@$(call check_image,$*)
+
+check-image-arch: check-image-$(ARCH) ## Check that the toolchain image for ARCH runs the expected architecture.
 
 # Single level: the nested gitlink in the Mupen64Plus-Next core
 # tree is intentionally left uninitialized.
-.PHONY: submodules
-submodules:
+submodules: ## Initialize submodules (no-op inside a container).
 ifeq ($(IN_CONTAINER),1)
 	@:
 else
 	git -C $(ROOTDIR) submodule update --init
 endif
 
-.PHONY: extension
-extension: submodules check-image-arch ## Build the GDExtension for ARCH/TARGET.
-	$(container-run) 'scons -j$(JOBS) target=$(TARGET) arch=$(ARCH) api_version=4.7 debug_symbols=$(DEBUG_SYMBOLS)'
+# --- GDExtension: stem is <arch>/<variant>, variant debug or release.
+ifneq ($(PREBUILT),1)
+$(EXT_LIBS): build/godot_libretro/%/libgodot_libretro.so: FORCE | submodules check-image-$$(stem_arch)
+	$(call run_in,$(stem_arch)) 'scons -j$(JOBS) target=template_$(stem_core) arch=$(stem_arch) api_version=4.7 debug_symbols=$(call ext_symbols,$(stem_core))'
+endif
 
-.PHONY: extension-all
-extension-all: ## Extension for both arches, debug and release.
-	for a in $(ARCHES); do \
-		for t in template_debug template_release; do \
-			$(MAKE) extension ARCH=$$a TARGET=$$t || exit 1; \
-		done; \
-	done
+# An unknown TARGET only fails here (no rule for its file), not for other targets.
+extension: build/godot_libretro/$(ARCH)/$(patsubst template_%,%,$(TARGET))/libgodot_libretro.so ## Build the GDExtension for ARCH/TARGET.
+extension-variants: $(foreach v,debug release,build/godot_libretro/$(ARCH)/$(v)/libgodot_libretro.so) ## Extension for ARCH, debug and release.
+extension-all: $(EXT_LIBS) ## Extension for both arches, debug and release.
 
-# Each architecture builds its cores inside its own copy of the pinned source
-# tree: those Makefiles leave .o files next to their sources with no
-# architecture in the name, so building the second architecture in the same
-# tree reports "make: Nothing to be done for 'all'" and the recipe would then
-# copy the first architecture's .so into the second architecture's folder.
-# The copy is seeded without build artifacts and only refreshed when the
-# pinned commit changes, so repeated builds stay incremental.
-define seed_core
-	@src=third_party/$(1); dst=build/src/$(ARCH)/$(1); \
-	commit=$$(git -C $$src rev-parse HEAD); \
+# --- Cores: stem is <arch>/<core>. Each architecture builds inside its own copy
+# of the pinned source tree: those Makefiles leave .o files next to their
+# sources with no architecture in the name, so building the second
+# architecture in the same tree reports "make: Nothing to be done for 'all'"
+# and the recipe would then copy the first architecture's .so into the second
+# architecture's folder. The copy is seeded without build artifacts and only
+# refreshed when the pinned commit changes, so repeated builds stay incremental.
+# The seeding runs in the shell of the recipe (host or container), the build in
+# the toolchain container.
+#
+# seed_core(core, mode, arch)
+seed_core = src=third_party/$(core_dir_$(1)); dst=$(mode_src_$(2))/$(3)/$(core_dir_$(1)); \
+	commit=$$(git -C $$src rev-parse HEAD) || exit 1; \
 	if [ ! -f "$$dst/.pinned-commit" ] || [ "$$(cat "$$dst/.pinned-commit")" != "$$commit" ]; then \
 		echo "seeding $$dst from $$src at $$commit"; \
 		rm -rf "$$dst"; mkdir -p "$$(dirname "$$dst")"; cp -a "$$src" "$$dst"; \
 		find "$$dst" \( -name '*.o' -o -name '*.os' -o -name '*.d' -o -name '*_libretro.so' \) -delete; \
-		rm -rf "$$dst"/build-roomvr-* "$$dst"/build-*; \
+		rm -rf "$$dst"/build-*; \
 		echo "$$commit" > "$$dst/.pinned-commit"; \
 	fi
-endef
 
-# Where a core .so goes once built.
-core_out = mkdir -p build/libretro/$(ARCH) && cp
-
-.PHONY: core-fceumm
-core-fceumm: submodules check-image-arch ## FCEUmm for ARCH.
-	$(call seed_core,libretro-fceumm)
-	$(container-run) 'make -C build/src/$(ARCH)/libretro-fceumm -f Makefile.libretro platform=unix -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-fceumm/fceumm_libretro.so build/libretro/$(ARCH)/'
-
-.PHONY: core-bsnes
-core-bsnes: submodules check-image-arch ## bsnes for ARCH.
-	$(call seed_core,libretro-bsnes)
-	$(container-run) 'make -C build/src/$(ARCH)/libretro-bsnes -f Makefile platform=unix -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-bsnes/bsnes_libretro.so build/libretro/$(ARCH)/'
-
-# Angrylion software RSP plus the parallel RSP/RDP paths, the recipe that was
-# measured fastest on the headset. ARCH is the container's own uname -m.
-.PHONY: core-mupen64plus-next
-core-mupen64plus-next: submodules check-image-arch ## Mupen64Plus-Next for ARCH.
-	$(call seed_core,libretro-mupen64plus-nx)
-	$(container-run) 'make -C build/src/$(ARCH)/libretro-mupen64plus-nx -f Makefile platform=unix ARCH=$(CONTAINER_UNAME) HAVE_THR_AL=1 HAVE_PARALLEL_RSP=1 HAVE_PARALLEL_RDP=1 LLE=1 -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-mupen64plus-nx/mupen64plus_next_libretro.so build/libretro/$(ARCH)/'
-
-.PHONY: core-gambatte
-core-gambatte: submodules check-image-arch ## Gambatte for ARCH.
-	$(call seed_core,libretro-gambatte)
-	$(container-run) 'make -C build/src/$(ARCH)/libretro-gambatte -f Makefile.libretro platform=unix -j$(JOBS) && $(core_out) build/src/$(ARCH)/libretro-gambatte/gambatte_libretro.so build/libretro/$(ARCH)/'
-
+# core_tree/cmake_dir/core_built/core_compile/core_build(core, arch, mode)
+core_tree = $(mode_src_$(3))/$(2)/$(core_dir_$(1))
 # The CMake binary directory is outside the source copy and keyed by
 # architecture, so no configuration can survive an architecture switch.
-.PHONY: core-mgba
-core-mgba: submodules check-image-arch ## mGBA for ARCH.
-	$(call seed_core,libretro-mgba)
-	$(container-run) 'cmake -S build/src/$(ARCH)/libretro-mgba -B build/cmake/$(ARCH)/mgba \
-		-DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF \
-		-DBUILD_TEST=OFF -DBUILD_SUITE=OFF -DBUILD_PERF=OFF -DBUILD_PYTHON=OFF -DBUILD_DOCGEN=OFF \
-		-DCMAKE_BUILD_TYPE=Release && \
-		cmake --build build/cmake/$(ARCH)/mgba --target mgba_libretro -j$(JOBS) && \
-		$(core_out) build/cmake/$(ARCH)/mgba/mgba_libretro.so build/libretro/$(ARCH)/'
+cmake_dir = $(mode_cmake_$(3))/$(2)/mgba
+core_built = $(if $(filter mgba,$(1)),$(call cmake_dir,$(1),$(2),$(3))/mgba_libretro.so,$(call core_tree,$(1),$(2),$(3))/$(1)_libretro.so)
+core_compile = $(if $(filter mgba,$(1)),cmake -S $(call core_tree,$(1),$(2),$(3)) -B $(call cmake_dir,$(1),$(2),$(3)) -DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_TEST=OFF -DBUILD_SUITE=OFF -DBUILD_PERF=OFF -DBUILD_PYTHON=OFF -DBUILD_DOCGEN=OFF -DCMAKE_BUILD_TYPE=$(mode_cmake_type_$(3)) && cmake --build $(call cmake_dir,$(1),$(2),$(3)) --target mgba_libretro -j$(JOBS),make -C $(call core_tree,$(1),$(2),$(3)) $(call core_make_args_$(1),$(2)) $(mode_flags_$(3)) -j$(JOBS))
+# The output is replaced only when its content changed, which keeps its mtime
+# (and everything built from it) stable across no-op builds.
+core_build = $(call core_compile,$(1),$(2),$(3)) && mkdir -p $(@D) && { cmp -s $(call core_built,$(1),$(2),$(3)) $@ || cp $(call core_built,$(1),$(2),$(3)) $@; }
 
-.PHONY: cores
-cores: core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba ## All five cores for ARCH.
+define core_recipe
+@$(call seed_core,$(stem_core),$(MODE),$(stem_arch))
+$(call run_in,$(stem_arch)) '$(call core_build,$(stem_core),$(stem_arch),$(MODE))'
+endef
 
-.PHONY: cores-all
-cores-all: ## All five cores for both arches.
-	$(MAKE) cores ARCH=x86_64
-	$(MAKE) cores ARCH=arm64
+ifneq ($(PREBUILT),1)
+$(CORE_SO_RELEASE): MODE := release
+$(CORE_SO_DEBUG): MODE := debug
+$(CORE_SO_RELEASE): build/libretro/%_libretro.so: FORCE | submodules check-image-$$(stem_arch)
+	$(core_recipe)
+$(CORE_SO_DEBUG): build/libretro-debug/%_libretro.so: FORCE | submodules check-image-$$(stem_arch)
+	$(core_recipe)
+endif
+
+core-fceumm: build/libretro/$(ARCH)/fceumm_libretro.so ## FCEUmm for ARCH.
+core-bsnes: build/libretro/$(ARCH)/bsnes_libretro.so ## bsnes for ARCH.
+core-mupen64plus-next: build/libretro/$(ARCH)/mupen64plus_next_libretro.so ## Mupen64Plus-Next for ARCH.
+core-gambatte: build/libretro/$(ARCH)/gambatte_libretro.so ## Gambatte for ARCH.
+core-mgba: build/libretro/$(ARCH)/mgba_libretro.so ## mGBA for ARCH.
+cores: $(foreach c,$(CORE_IDS),build/libretro/$(ARCH)/$(c)_libretro.so) ## All five cores for ARCH.
+cores-all: $(CORE_SO_RELEASE) ## All five cores for both arches.
+
+core-debug-fceumm: build/libretro-debug/$(ARCH)/fceumm_libretro.so ## FCEUmm (with debug info) for ARCH.
+core-debug-bsnes: build/libretro-debug/$(ARCH)/bsnes_libretro.so ## bsnes (with debug info) for ARCH.
+core-debug-mupen64plus-next: build/libretro-debug/$(ARCH)/mupen64plus_next_libretro.so ## Mupen64Plus-Next (with debug info) for ARCH.
+core-debug-gambatte: build/libretro-debug/$(ARCH)/gambatte_libretro.so ## Gambatte (with debug info) for ARCH.
+core-debug-mgba: build/libretro-debug/$(ARCH)/mgba_libretro.so ## mGBA (with debug info) for ARCH.
+cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All five cores (with debug info) for ARCH.
+cores-debug-all: $(CORE_SO_DEBUG) ## All five cores (with debug info) for both arches.
 
 # One original sample ROM per core, compiled from tools/sample_roms.
-.PHONY: roms
-roms:
-	python3 tools/sample_roms/make_sample_roms.py build/roms
+$(ROMS_STAMP): $(wildcard tools/sample_roms/*)
+	@mkdir -p $(@D)
+	python3 tools/sample_roms/make_sample_roms.py $(@D)
+	@touch $@
+roms: $(ROMS_STAMP) ## Build the sample ROMs.
+
+##@ Test
 
 # Callback probe of a prebuilt core, no Godot involved: it drives the Libretro
 # API against the generated sample ROM and fails if the core stops feeding
-# frames. libretro.h comes from the libretro-common submodule.
-build/libretro_probe: tests/libretro_probe.c third_party/libretro-common/include/libretro.h
+# frames. libretro.h comes from the libretro-common submodule. test-probe uses
+# a copy built with the host compiler; the stripped-core checks use one built
+# inside the toolchain container of each architecture (build/probe/<arch>/).
+$(LIBRETRO_H): | submodules ;
+
+$(HOST_PROBE): tests/libretro_probe.c $(LIBRETRO_H)
+	@mkdir -p $(@D)
 	cc -O2 -Wall -Wextra -I third_party/libretro-common/include $< -ldl -o $@
-.PHONY: test-probe
-test-probe: build/libretro_probe submodules roms ## Drive a built FCEUmm core through the raw Libretro callbacks.
-	@test "$(ARCH)" = "$(HOST_ARCH)" || { echo "test-probe dlopens the core with the host compiler: ARCH must equal the host architecture ($(HOST_ARCH))." >&2; exit 1; }
-	@test -f build/libretro/$(HOST_ARCH)/fceumm_libretro.so || { \
-		echo "Missing build/libretro/$(HOST_ARCH)/fceumm_libretro.so: make core-fceumm" >&2; exit 1; }
-	./build/libretro_probe build/libretro/$(HOST_ARCH)/fceumm_libretro.so build/roms/sample.nes
+
+test-probe: $(HOST_PROBE) build/libretro/$(HOST_ARCH)/fceumm_libretro.so $(ROMS_STAMP) ## Build FCEUmm and drive it through the raw Libretro callbacks.
+	./$(HOST_PROBE) build/libretro/$(HOST_ARCH)/fceumm_libretro.so build/roms/sample.nes
 
 # Headless Godot tests of the extension and the cores, run against the
-# host-arch debug extension and the host-arch cores.
-.PHONY: test-godot
-test-godot: extension roms
-	@test -n "$(GODOT)" || { echo "No godot binary found; set GODOT=/path/to/godot"; exit 1; }
-	$(MAKE) cores ARCH=$(HOST_ARCH)
-	mkdir -p tests/godot/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH) \
-		tests/godot/roms tests/godot/build/libretro/$(HOST_ARCH)
-	cp build/godot_libretro/$(HOST_ARCH)/debug/libgodot_libretro.so \
-		tests/godot/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH)/
-	cp build/roms/sample.* tests/godot/roms/
-	cp build/libretro/$(HOST_ARCH)/*.so tests/godot/build/libretro/$(HOST_ARCH)/
-	@$(GODOT) --headless --xr-mode off --path tests/godot --import || true
-	@for t in tests/godot/tests/test_*.gd; do \
+# host-arch debug extension and the host-arch cores. Both godot targets stage
+# their files in the same Godot project, so the lock keeps them apart.
+define godot_recipe
+@test -n "$(GODOT)" || { echo "No godot binary found; set GODOT=/path/to/godot"; exit 1; }
+@mkdir -p build
+@( flock 9 || exit 1; \
+	rm -f $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH)/*.so; \
+	mkdir -p $(GODOT_PROJECT)/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH) \
+		$(GODOT_PROJECT)/roms $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH) || exit 1; \
+	cp $(HOST_EXT_DEBUG) $(GODOT_PROJECT)/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH)/ || exit 1; \
+	cp build/roms/sample.* $(GODOT_PROJECT)/roms/ || exit 1; \
+	cp $(addprefix $(GODOT_CORES)/,$(CORE_SOS)) $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH)/ || exit 1; \
+	"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --import || true; \
+	for t in $(GODOT_PROJECT)/tests/test_*.gd; do \
 		echo "== $$t"; \
-		$(GODOT) --headless --xr-mode off --path tests/godot --script res://tests/$$(basename $$t) || exit 1; \
-	done
+		"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --script res://tests/$$(basename $$t) || exit 1; \
+	done ) 9>build/godot-project.lock
+endef
+
+test-godot: GODOT_CORES := build/libretro/$(HOST_ARCH)
+test-godot: $(HOST_EXT_DEBUG) $(foreach c,$(CORE_SOS),build/libretro/$(HOST_ARCH)/$(c)) $(ROMS_STAMP) ## Run the headless Godot tests (extension + host-arch cores).
+	$(godot_recipe)
+
+##@ Release
 
 # Full release matrix: the extension for both arches and both variants, all
 # cores for both arches, and the sample ROMs.
-.PHONY: release
-release: extension-all cores-all roms
+release: extension-all cores-all roms ## Build the full release matrix (no strip or packaging).
 
 # Release binaries ship stripped. The build trees keep their symbols for local
 # debugging; the packaged copies go through strip --strip-unneeded inside the
 # container of their own architecture. A stripped core is only trusted once it
 # has booted: the Libretro callback probe dlopens it and runs its sample ROM,
 # and check-stripped-godot additionally loads the stripped host-arch cores
-# through the extension's real dlmopen path. `make package` refuses to run the
-# per-architecture checks unless SKIP_VERIFY=1, and stops if any of them fails.
-DIST_CORE_SOS := $(foreach a,$(ARCHES),$(foreach c,$(CORE_SOS),build/dist/$(a)/$(c)))
-# The bare callback probe only boots the cores that need nothing beyond the
-# video/audio/input callbacks: measured, mupen64plus_next crashes (it asks for
-# the host Vulkan device) and gambatte rejects the ROM (it needs GET_CAN_DUPE),
-# both of which the Godot harness does provide. So those two are verified
-# through --symbols here and through the extension in check-stripped-godot.
-PROBE_BOOTS := fceumm:sample.nes bsnes:sample.sfc mgba:sample.gba
+# through the extension's real dlmopen path. `make package` runs these
+# checks unless SKIP_VERIFY=1, and stops if any of them fails.
+#
+# Stem is <arch>/<core>.
+$(DIST_SOS): build/dist/%_libretro.so: build/libretro/%_libretro.so | check-image-$$(stem_arch)
+	@mkdir -p $(@D)
+	$(call run_in,$(stem_arch)) 'strip --strip-unneeded -o $@ $<'
 
-ifeq ($(IN_CONTAINER),1)
-run_in_arch = bash -c
-else
-run_in_arch = $(PODMAN) run --rm --platform linux$(if $(filter arm64,$(1)),/arm64,/amd64) --network none -v $(ROOTDIR):/work -w /work $(IMAGE):$(IMAGE_TAG)-$(1) bash -c
-endif
+$(PROBES): build/probe/%/libretro_probe: tests/libretro_probe.c $(LIBRETRO_H) | check-image-%
+	@mkdir -p $(@D)
+	$(call run_in,$*) 'cc -O2 -Wall -Wextra -I third_party/libretro-common/include $< -ldl -o $@'
 
-define strip_core_rule
-build/dist/$(1)/$(word $(2),$(CORE_SOS)): build/libretro/$(1)/$(word $(2),$(CORE_SOS))
-	@mkdir -p $$(@D)
-	$$(call run_in_arch,$(1)) 'strip --strip-unneeded -o $$@ $$<'
-endef
-$(foreach a,$(ARCHES),$(foreach i,$(CORE_INDEX),$(eval $(call strip_core_rule,$(a),$(i)))))
+# Verification stamps. Stem is <arch>/stripped/<core> or <arch>/debug/<core>.
+is_boot = $(filter $(stem_core),$(BOOT_CORES))
 
-.PHONY: check-stripped
-# CHECK_CORES narrows the gate to the cores this invocation actually built: CI
-# compiles one core per job, so a job must not demand that the other four exist.
-CHECK_CORES ?= $(CORE_IDS)
+$(CHECK_STRIPPED_ALL): build/checks/%.ok: build/dist/$$(stem_arch)/$$(stem_core)_libretro.so build/probe/$$(stem_arch)/libretro_probe $(ROMS_STAMP)
+	@echo "== stripped symbols $(stem_arch)/$(stem_core)"
+	$(call run_in,$(stem_arch)) './build/probe/$(stem_arch)/libretro_probe --symbols build/dist/$(stem_arch)/$(stem_core)_libretro.so'
+	$(if $(is_boot),@echo "== stripped boot $(stem_arch)/$(stem_core)")
+	$(if $(is_boot),$(call run_in,$(stem_arch)) './build/probe/$(stem_arch)/libretro_probe build/dist/$(stem_arch)/$(stem_core)_libretro.so build/roms/$(core_rom_$(stem_core))')
+	@mkdir -p $(@D) && touch $@
 
-.PHONY: check-stripped
-check-stripped: $(foreach c,$(CHECK_CORES),build/dist/$(ARCH)/$(c)_libretro.so) ## Strip and boot-check the ARCH cores named in CHECK_CORES.
-	$(call run_in_arch,$(ARCH)) 'cc -O2 -Wall -Wextra -I third_party/libretro-common/include tests/libretro_probe.c -ldl -o build/libretro_probe'
-	@for core in $(CHECK_CORES); do \
-		printf '== stripped symbols %s/%s\n' "$(ARCH)" "$$core"; \
-		$(call run_in_arch,$(ARCH)) "./build/libretro_probe --symbols build/dist/$(ARCH)/$${core}_libretro.so" || exit 1; \
-	done
-	@for pair in $(PROBE_BOOTS); do \
-		core=$${pair%%:*}; rom=$${pair##*:}; \
-		case " $(CHECK_CORES) " in *" $$core "*) ;; *) continue;; esac; \
-		printf '== stripped boot %s/%s\n' "$(ARCH)" "$$core"; \
-		$(call run_in_arch,$(ARCH)) "./build/libretro_probe build/dist/$(ARCH)/$${core}_libretro.so build/roms/$$rom" || exit 1; \
-	done
+$(CHECK_DEBUG_ALL): build/checks/%.ok: build/libretro-debug/$$(stem_arch)/$$(stem_core)_libretro.so
+	@echo "== debug info $(stem_arch)/$(stem_core)"
+	$(call run_in,$(stem_arch)) 'f=build/libretro-debug/$(stem_arch)/$(stem_core)_libretro.so; readelf -S "$$f" | grep -q "\.symtab" || { echo "$$f: no .symtab" >&2; exit 1; }; readelf -S "$$f" | grep -q "\.debug_" || { echo "$$f: no debug info" >&2; exit 1; }'
+	@mkdir -p $(@D) && touch $@
 
-.PHONY: check-stripped-all
-check-stripped-all: ## check-stripped for both architectures.
-	$(MAKE) check-stripped ARCH=x86_64
-	$(MAKE) check-stripped ARCH=arm64
+check-stripped: $(foreach c,$(CHECK_CORES),build/checks/$(ARCH)/stripped/$(c).ok) ## Strip and boot-check the ARCH cores named in CHECK_CORES.
+check-stripped-all: $(foreach a,$(ARCHES),$(foreach c,$(CHECK_CORES),build/checks/$(a)/stripped/$(c).ok)) ## check-stripped for both architectures.
+check-debug: $(foreach c,$(CHECK_CORES),build/checks/$(ARCH)/debug/$(c).ok) ## Verify the ARCH debug cores carry debug info.
+check-debug-all: $(foreach a,$(ARCHES),$(foreach c,$(CHECK_CORES),build/checks/$(a)/debug/$(c).ok)) ## check-debug for both architectures.
 
-.PHONY: check-stripped-godot
-check-stripped-godot: extension roms ## Load the stripped host-arch cores through the extension itself.
-	@test -n "$(GODOT)" || { echo "No godot binary found; set GODOT=/path/to/godot"; exit 1; }
-	mkdir -p tests/godot/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH) \
-		tests/godot/roms tests/godot/build/libretro/$(HOST_ARCH)
-	cp build/godot_libretro/$(HOST_ARCH)/debug/libgodot_libretro.so \
-		tests/godot/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH)/
-	cp build/roms/sample.* tests/godot/roms/
-	cp build/dist/$(HOST_ARCH)/*.so tests/godot/build/libretro/$(HOST_ARCH)/
-	@$(GODOT) --headless --xr-mode off --path tests/godot --import || true
-	@for t in tests/godot/tests/test_*.gd; do \
-		echo "== $$t"; \
-		$(GODOT) --headless --xr-mode off --path tests/godot --script res://tests/$$(basename $$t) || exit 1; \
-	done
+check-stripped-godot: GODOT_CORES := build/dist/$(HOST_ARCH)
+check-stripped-godot: $(HOST_EXT_DEBUG) $(foreach c,$(CORE_SOS),build/dist/$(HOST_ARCH)/$(c)) $(ROMS_STAMP) ## Load the stripped host-arch cores through the extension itself.
+	$(godot_recipe)
 
-# Zips, from the matrix above. One zip per core per architecture (the core .so,
-# its license staged as LICENSE and its sample ROM, all at the archive root), plus a
+##@ Packaging
+
+# The first license file present in the pinned tree, staged as LICENSE.
+# Stem is the core id.
+$(LICENSES): build/licenses/%/LICENSE: FORCE | submodules
+	@mkdir -p $(@D)
+	@src=third_party/$(core_dir_$*); \
+	for n in $(CORE_LICENSE_CANDIDATES); do \
+		if [ -f "$$src/$$n" ]; then cmp -s "$$src/$$n" $@ || cp "$$src/$$n" $@; exit 0; fi; \
+	done; \
+	echo "No license file among $(CORE_LICENSE_CANDIDATES) in $$src" >&2; exit 1
+
+# Zips, from the matrix above. One zip per core per architecture and variant
+# (the core .so, its license staged as LICENSE and its sample ROM, all at the
+# archive root; the release one stripped, the debug one unstripped), plus a
 # single extension zip holding every architecture and variant in the addons/
-# layout a Godot project can extract over its root.
+# layout a Godot project can extract over its root. A zip is removed before
+# rebuilding: zip would otherwise update the old archive and keep stale entries.
+# Unless SKIP_VERIFY=1, a core zip also requires its verification stamp.
+# Stem is <arch>-<core>.
+release_gate = $(if $(SKIP_GATES),,build/checks/$(zip_arch)/stripped/$(zip_core).ok)
+debug_gate = $(if $(SKIP_GATES),,build/checks/$(zip_arch)/debug/$(zip_core).ok)
+
+$(CORE_ZIPS_RELEASE): dist/godot_libretro-linux-%-release-$(VERSION).zip: build/dist/$$(zip_arch)/$$(zip_core)_libretro.so $(ROMS_STAMP) build/licenses/$$(zip_core)/LICENSE $$(release_gate)
+	@rm -f $@
+	@mkdir -p $(@D)
+	$(package_run) 'zip -9 -j -X $@ build/dist/$(zip_arch)/$(zip_core)_libretro.so build/roms/$(core_rom_$(zip_core)) build/licenses/$(zip_core)/LICENSE'
+
+$(CORE_ZIPS_DEBUG): dist/godot_libretro-linux-%-debug-$(VERSION).zip: build/libretro-debug/$$(zip_arch)/$$(zip_core)_libretro.so $(ROMS_STAMP) build/licenses/$$(zip_core)/LICENSE $$(debug_gate)
+	@rm -f $@
+	@mkdir -p $(@D)
+	$(package_run) 'zip -9 -j -X $@ build/libretro-debug/$(zip_arch)/$(zip_core)_libretro.so build/roms/$(core_rom_$(zip_core)) build/licenses/$(zip_core)/LICENSE'
+
+# The extension libraries are real files: the zip is only rebuilt when one of
+# them changed.
 $(EXT_ZIP): $(EXT_LIBS) LICENSE
-	@mkdir -p dist
-	rm -rf build/package
+	@rm -f $@
+	@mkdir -p $(@D)
+	rm -rf build/package/addons
 	for a in $(ARCHES); do \
-		for pair in template_debug:debug template_release:release; do \
-			dir="build/package/addons/godot_libretro/.bin/linux/$${pair%%:*}/$$a"; \
-			mkdir -p "$$dir" && cp "build/godot_libretro/$$a/$${pair##*:}/libgodot_libretro.so" "$$dir/"; \
+		for v in debug release; do \
+			dir=build/package/addons/godot_libretro/.bin/linux/template_$$v/$$a; \
+			mkdir -p $$dir && cp build/godot_libretro/$$a/$$v/libgodot_libretro.so $$dir/ || exit 1; \
 		done; \
 	done
 	mkdir -p build/package/addons/godot_libretro && cp LICENSE build/package/addons/godot_libretro/
-	$(package-run) 'cd build/package && zip -9 -rX /work/$@ addons'
+	$(package_run) 'cd build/package && zip -9 -rX ../../$@ addons'
 
-# Generated rules: one core zip per architecture per core (the core .so, the
-# license file of its pinned tree — the first of CORE_LICENSE_CANDIDATES
-# that exists, staged as LICENSE — and the sample ROM, all at the archive
-# root).
-define core_zip_rule
-dist/godot_libretro-linux-$(1)-$(word $(2),$(CORE_IDS))-$(VERSION).zip: \
-		build/dist/$(1)/$(word $(2),$(CORE_SOS)) \
-		build/roms/$(word $(2),$(CORE_ROMS))
-	@mkdir -p dist build/package/core_$(word $(2),$(CORE_IDS)); \
-	if [ -f third_party/$(word $(2),$(CORE_DIRS))/LICENSE ]; then \
-		cp third_party/$(word $(2),$(CORE_DIRS))/LICENSE build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
-	elif [ -f third_party/$(word $(2),$(CORE_DIRS))/LICENSE.txt ]; then \
-		cp third_party/$(word $(2),$(CORE_DIRS))/LICENSE.txt build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
-	elif [ -f third_party/$(word $(2),$(CORE_DIRS))/COPYING ]; then \
-		cp third_party/$(word $(2),$(CORE_DIRS))/COPYING build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
-	elif [ -f third_party/$(word $(2),$(CORE_DIRS))/Copying ]; then \
-		cp third_party/$(word $(2),$(CORE_DIRS))/Copying build/package/core_$(word $(2),$(CORE_IDS))/LICENSE; \
-	else \
-		echo "No license file among $(CORE_LICENSE_CANDIDATES) in third_party/$(word $(2),$(CORE_DIRS))" >&2; exit 1; \
-	fi
-	$$(package-run) 'zip -9 -j -X /work/$$@ build/dist/$(1)/$(word $(2),$(CORE_SOS)) build/roms/$(word $(2),$(CORE_ROMS)) build/package/core_$(word $(2),$(CORE_IDS))/LICENSE'
-endef
-$(foreach a,$(ARCHES),$(foreach i,$(CORE_INDEX),$(eval $(call core_zip_rule,$(a),$(i)))))
+release-zips: $(CORE_ZIPS_RELEASE) ## Release (stripped) core zips, with the sample ROM and LICENSE.
+debug-zips: $(CORE_ZIPS_DEBUG) ## Debug (unstripped, with debug info) core zips, with the sample ROM and LICENSE.
 
-$(MANIFEST): $(EXT_ZIP) $(CORE_ZIPS)
-	$(package-run) 'cd dist && md5sum *.zip > manifest.md5'
+# Only this version's zips go in the manifest: older versions pile up in dist/.
+# The Godot harness (a host-architecture test of the stripped cores) is an
+# order-only gate: the manifest is not written unless it passed, and it does not
+# force the manifest to be rewritten. SKIP_VERIFY=1 skips it.
+PACKAGE_GATE := $(if $(SKIP_GATES),,check-stripped-godot)
 
-.PHONY: package
-# The verification gate runs for both architectures (the arm64 one under qemu)
-# plus the extension harness on the host architecture. CI already ran
-# check-stripped inside each architecture job, so it passes SKIP_VERIFY=1 to the
-# packaging job instead of nesting a container inside a container.
-PACKAGE_VERIFY := $(if $(filter 1,$(SKIP_VERIFY)),,check-stripped-all check-stripped-godot)
+$(MANIFEST): $(EXT_ZIP) $(CORE_ZIPS_RELEASE) $(CORE_ZIPS_DEBUG) | $(PACKAGE_GATE)
+	$(package_run) 'cd dist && md5sum *-$(VERSION).zip > manifest.md5'
 
-package: $(PACKAGE_VERIFY) $(EXT_ZIP) $(CORE_ZIPS) $(MANIFEST) ## Build every release zip from the matrix.
+package: $(MANIFEST) ## Build all release and debug zips from the matrix.
 
-.PHONY: clean
-clean:
+clean: ## Remove build/ and dist/.
 	rm -rf build dist
