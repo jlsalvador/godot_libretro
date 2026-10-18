@@ -113,6 +113,7 @@ package_run = $(call run_in,$(HOST_ARCH))
 # tools/sample_roms) and, for the make-based ones, the arguments of its
 # upstream build. The license file staged in the zips is the first of
 # CORE_LICENSE_CANDIDATES present in the pinned tree (none: packaging fails).
+# Every core zip also stages SOURCE, naming the pinned tree it was built from.
 CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba
 CORE_SOS := $(addsuffix _libretro.so,$(CORE_IDS))
 CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
@@ -167,7 +168,6 @@ CORE_SO_RELEASE := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/libretro/
 CORE_SO_DEBUG := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/libretro-debug/$(a)/$(c)_libretro.so))
 DIST_SOS := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/dist/$(a)/$(c)_libretro.so))
 PROBES := $(foreach a,$(ARCHES),build/probe/$(a)/libretro_probe)
-LICENSES := $(foreach c,$(CORE_IDS),build/licenses/$(c)/LICENSE)
 CHECK_STRIPPED_ALL := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/checks/$(a)/stripped/$(c).ok))
 CHECK_DEBUG_ALL := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),build/checks/$(a)/debug/$(c).ok))
 CORE_ZIPS_RELEASE := $(foreach a,$(ARCHES),$(foreach c,$(CORE_IDS),dist/godot_libretro-linux-$(a)-$(c)-release-$(VERSION).zip))
@@ -403,7 +403,7 @@ check-stripped-godot: $(HOST_EXT_DEBUG) $(foreach c,$(CORE_SOS),build/dist/$(HOS
 
 # The first license file present in the pinned tree, staged as LICENSE.
 # Stem is the core id.
-$(LICENSES): build/licenses/%/LICENSE: FORCE | submodules
+build/licenses/%/LICENSE: FORCE | submodules
 	@mkdir -p $(@D)
 	@src=third_party/$(core_dir_$*); \
 	for n in $(CORE_LICENSE_CANDIDATES); do \
@@ -411,9 +411,58 @@ $(LICENSES): build/licenses/%/LICENSE: FORCE | submodules
 	done; \
 	echo "No license file among $(CORE_LICENSE_CANDIDATES) in $$src" >&2; exit 1
 
+# The corresponding source of a core, staged as SOURCE: which tree this binary
+# was built from and where to get it. Four of the five cores are GPL and the
+# fifth is MPL, both of which require the source to be conveyed with the
+# binary; a URL plus the exact commit names it unambiguously. Both values are
+# read from this repository (the URL from .gitmodules, the commit from the
+# gitlink), so the file cannot drift from what a cloner gets. The pinned tree
+# is built unmodified (seed_core copies it and only deletes build
+# artifacts), so the tree at that commit is the complete corresponding
+# source. Like the
+# license file, SOURCE is only rewritten when its content changes.
+build/licenses/%/SOURCE: FORCE
+	@mkdir -p $(@D)
+	@dir=third_party/$(core_dir_$*); \
+	name=$$(basename "$$dir"); \
+	url=$$(git config -f .gitmodules --get "submodule.$$dir.url") || exit 1; \
+	sha=$$(git rev-parse "HEAD:$$dir") || exit 1; \
+	{ \
+		echo "godot_libretro: corresponding source of this core"; \
+		echo "================================================"; \
+		echo; \
+		echo "Core:    $*"; \
+		echo "Binary:  $*_libretro.so"; \
+		echo; \
+		echo "License: the LICENSE file in this archive is a verbatim copy of"; \
+		echo "         the license file of the pinned upstream tree below."; \
+		echo; \
+		echo "Upstream repository:"; \
+		echo "    $$url"; \
+		echo; \
+		echo "Pinned commit:"; \
+		echo "    $$sha"; \
+		echo; \
+		echo "The complete corresponding source of this binary is the upstream"; \
+		echo "tree at that commit, used with no source modifications (build"; \
+		echo "arguments only) and built with GCC 12 on Debian 12. To obtain it:"; \
+		echo; \
+		echo "    git clone $$url"; \
+		echo "    cd $$name"; \
+		echo "    git checkout $$sha"; \
+		echo; \
+		echo "The same tree is pinned as a submodule of the project that built this"; \
+		echo "binary; 'git submodule update --init' (or 'make submodules') checks"; \
+		echo "out exactly that commit:"; \
+		echo; \
+		echo "    $$dir"; \
+	} > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
+
 # Zips, from the matrix above. One zip per core per architecture and variant
-# (the core .so, its license staged as LICENSE and its sample ROM, all at the
-# archive root; the release one stripped, the debug one unstripped), plus a
+# (the core .so, its license staged as LICENSE, the SOURCE file naming its
+# upstream tree, and its sample ROM, all at the archive root; the release one
+# stripped, the debug one unstripped), plus a
 # single extension zip holding every architecture and variant in the addons/
 # layout a Godot project can extract over its root. A zip is removed before
 # rebuilding: zip would otherwise update the old archive and keep stale entries.
@@ -422,15 +471,15 @@ $(LICENSES): build/licenses/%/LICENSE: FORCE | submodules
 release_gate = $(if $(SKIP_GATES),,build/checks/$(zip_arch)/stripped/$(zip_core).ok)
 debug_gate = $(if $(SKIP_GATES),,build/checks/$(zip_arch)/debug/$(zip_core).ok)
 
-$(CORE_ZIPS_RELEASE): dist/godot_libretro-linux-%-release-$(VERSION).zip: build/dist/$$(zip_arch)/$$(zip_core)_libretro.so $(ROMS_STAMP) build/licenses/$$(zip_core)/LICENSE $$(release_gate)
+$(CORE_ZIPS_RELEASE): dist/godot_libretro-linux-%-release-$(VERSION).zip: build/dist/$$(zip_arch)/$$(zip_core)_libretro.so $(ROMS_STAMP) build/licenses/$$(zip_core)/LICENSE build/licenses/$$(zip_core)/SOURCE $$(release_gate)
 	@rm -f $@
 	@mkdir -p $(@D)
-	$(package_run) 'zip -9 -j -X $@ build/dist/$(zip_arch)/$(zip_core)_libretro.so build/roms/$(core_rom_$(zip_core)) build/licenses/$(zip_core)/LICENSE'
+	$(package_run) 'zip -9 -j -X $@ build/dist/$(zip_arch)/$(zip_core)_libretro.so build/roms/$(core_rom_$(zip_core)) build/licenses/$(zip_core)/LICENSE build/licenses/$(zip_core)/SOURCE'
 
-$(CORE_ZIPS_DEBUG): dist/godot_libretro-linux-%-debug-$(VERSION).zip: build/libretro-debug/$$(zip_arch)/$$(zip_core)_libretro.so $(ROMS_STAMP) build/licenses/$$(zip_core)/LICENSE $$(debug_gate)
+$(CORE_ZIPS_DEBUG): dist/godot_libretro-linux-%-debug-$(VERSION).zip: build/libretro-debug/$$(zip_arch)/$$(zip_core)_libretro.so $(ROMS_STAMP) build/licenses/$$(zip_core)/LICENSE build/licenses/$$(zip_core)/SOURCE $$(debug_gate)
 	@rm -f $@
 	@mkdir -p $(@D)
-	$(package_run) 'zip -9 -j -X $@ build/libretro-debug/$(zip_arch)/$(zip_core)_libretro.so build/roms/$(core_rom_$(zip_core)) build/licenses/$(zip_core)/LICENSE'
+	$(package_run) 'zip -9 -j -X $@ build/libretro-debug/$(zip_arch)/$(zip_core)_libretro.so build/roms/$(core_rom_$(zip_core)) build/licenses/$(zip_core)/LICENSE build/licenses/$(zip_core)/SOURCE'
 
 # The extension libraries are real files: the zip is only rebuilt when one of
 # them changed.
@@ -447,8 +496,8 @@ $(EXT_ZIP): $(EXT_LIBS) LICENSE
 	mkdir -p build/package/addons/godot_libretro && cp LICENSE build/package/addons/godot_libretro/
 	$(package_run) 'cd build/package && zip -9 -rX ../../$@ addons'
 
-release-zips: $(CORE_ZIPS_RELEASE) ## Release (stripped) core zips, with the sample ROM and LICENSE.
-debug-zips: $(CORE_ZIPS_DEBUG) ## Debug (unstripped, with debug info) core zips, with the sample ROM and LICENSE.
+release-zips: $(CORE_ZIPS_RELEASE) ## Release (stripped) core zips, with LICENSE, SOURCE and the sample ROM.
+debug-zips: $(CORE_ZIPS_DEBUG) ## Debug (unstripped, with debug info) core zips, with LICENSE, SOURCE and the sample ROM.
 
 # Only this version's zips go in the manifest: older versions pile up in dist/.
 # The Godot harness (a host-architecture test of the stripped cores) is an

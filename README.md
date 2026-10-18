@@ -12,7 +12,9 @@ This project ships precompiled Linux artifacts:
   `addons/godot_libretro/.bin/...`).
 - `godot_libretro-linux-<arch>-<core>-<version>.zip`: one core per
   architecture, containing the core `.so`, its `LICENSE` (the license file
-  of its pinned submodule tree) and the original sample ROM that core boots.
+  of its pinned submodule tree), a `SOURCE` file naming the upstream
+  repository and the exact commit it was built from, and the original
+  sample ROM that core boots.
   Consumers discover cores at runtime from a `cores/` folder beside the
   executable (drop the `.so` files there, any mix of cores and platforms).
 
@@ -48,6 +50,10 @@ The cores are separate works loaded at runtime through the Libretro C API;
 the extension never links them, so their licenses stay inside their own
 binaries. `libretro.h` (API header only, no code linked) is taken from
 our pinned `third_party/libretro-common` submodule.
+Four of the five cores are GPLv2 and mGBA is MPL-2.0; each core zip's
+SOURCE file names the upstream repository and the exact pinned commit, so
+the complete corresponding source of every binary is available there; the
+trees are built unmodified.
 
 ## Building
 
