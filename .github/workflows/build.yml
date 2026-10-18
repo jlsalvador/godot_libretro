@@ -47,6 +47,16 @@ env:
 # The container runs as the runner's own user: the repository is bind-mounted,
 # so files stay owned by the runner and git does not reject the mounted
 # submodules as "dubious ownership". The network is off, as in the local flow.
+#
+# Submodules: the jobs that need them check out with `submodules: false` and
+# then run `make submodules` (a single level, the same command as the local
+# flow). The nested gitlink of the Mupen64Plus-Next core
+# (mupen64plus-rsp-paraLLEl/lightning/gnulib) has no entry in its upstream
+# .gitmodules, so `git submodule foreach --recursive` fails on it with exit
+# code 128, and actions/checkout runs exactly that in its credential cleanup
+# whenever a submodule is populated. Dropping the gitlink from the index of the
+# nested repository avoids it without touching the pinned commit or the
+# worktree.
 jobs:
   toolchain:
     strategy:
@@ -89,8 +99,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true
+          submodules: false
           persist-credentials: false
+      - name: Initialize submodules (single level)
+        run: make submodules
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -147,8 +159,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true
+          submodules: false
           persist-credentials: false
+      - name: Initialize submodules (single level)
+        run: make submodules
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -238,8 +252,10 @@ jobs:
       # The submodules are needed for the license files staged in the zips.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true
+          submodules: false
           persist-credentials: false
+      - name: Initialize submodules (single level)
+        run: make submodules
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Load the host toolchain image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
