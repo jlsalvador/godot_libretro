@@ -15,8 +15,6 @@ This project ships precompiled Linux artifacts:
   of its pinned submodule tree), a `SOURCE` file naming the upstream
   repository and the exact commit it was built from, and the original
   sample ROM that core boots.
-  Consumers discover cores at runtime from a `cores/` folder beside the
-  executable (drop the `.so` files there, any mix of cores and platforms).
 
 ## Layout
 
@@ -90,32 +88,3 @@ The extension keeps its objects under `build/obj/<arch>/<variant>/` for the same
 reason: SCons decides by the signature of the command line, and two native
 toolchain containers pass the identical one.
 
-## Stripping, symbols and the verification gate
-
-Cores ship stripped (`strip --strip-unneeded`). Nothing is
-packaged until it has booted:
-
-- every stripped core is resolved symbol by symbol through
-  `libretro_probe --symbols`, which is exactly what a bad strip would break;
-- the three cores whose callbacks the bare probe can drive (FCEUmm, bsnes, mGBA)
-  also run 120 real frames;
-- `mupen64plus_next` and `gambatte` are loaded through the extension itself by
-  `check-stripped-godot`, because they need what `LibretroSession` provides (a
-  host Vulkan device and `GET_CAN_DUPE`) and the bare probe cannot boot them.
-
-`make package` runs those checks for both architectures (arm64 under qemu) plus
-the host-architecture harness. Pass `SKIP_VERIFY=1` only where the checks
-already ran, which is what CI does: each architecture job verifies its own
-stripped cores before anything is zipped.
-
-The `template_debug` extension variant keeps full DWARF (`debug_symbols=yes`,
-`-g2`) so a crash on the headset resolves to file and line; `template_release`
-links with `-s`.
-
-## Releases
-
-Tagged releases build the matrix (linux x86_64 + arm64 x template_debug +
-template_release) and upload the zips with an md5 manifest.
-`.github/workflows/build.yml` starts the toolchain image of each architecture
-and runs `make IN_CONTAINER=1 <target>` inside it, so no build command lives in
-the YAML. The arm64 jobs run that image under qemu on the amd64 runner.
