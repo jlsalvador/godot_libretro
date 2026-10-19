@@ -16,16 +16,13 @@ name: build
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
 
-# Superseded pull request runs are cancelled; main and tag runs never are,
-# because a tag run publishes.
+# Runs are keyed on the full ref, so each tag build is its own group and a
+# fresh tag push never cancels an in-flight tag run (a tag run publishes).
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
