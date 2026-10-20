@@ -5,11 +5,11 @@ Every sample is an original test pattern (no game content): a minimal
 program for each system that boots in the matching Libretro core. Each
 core gets exactly one ROM, named `sample.<extension>`.
 
-The per-system byte-level builders live in `builders/<core>.py`, one
-module each, and are deliberately isolated so iterating on one system
+The per-system byte-level builders live next to this script, one
+module per core, and are deliberately isolated so iterating on one system
 never touches another.  Each exposes `build() -> bytes`.
 
-Usage: make_sample_roms.py OUTPUT_DIR
+Usage: all.py OUTPUT_DIR
 """
 
 import hashlib
@@ -17,18 +17,22 @@ import sys
 from pathlib import Path
 
 # Allow running as a plain script (no `pip install -e`) by putting our own
-# directory on sys.path so `import builders.nes` etc. resolve.
+# directory on sys.path so `import fceumm` etc. resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from builders import gba, gbc, n64, nes, snes
+import bsnes
+import fceumm
+import gambatte
+import mgba
+import mupen64plus_next
 
 
 BUILDERS = {
-	"sample.nes": nes.build,
-	"sample.sfc": snes.build,
-	"sample.v64": n64.build,
-	"sample.gbc": gbc.build,
-	"sample.gba": gba.build,
+	"sample.nes": fceumm.build,
+	"sample.sfc": bsnes.build,
+	"sample.z64": mupen64plus_next.build,
+	"sample.gbc": gambatte.build,
+	"sample.gba": mgba.build,
 }
 
 

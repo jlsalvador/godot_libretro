@@ -13,7 +13,7 @@ const CORES := {
 const SAMPLE_ROMS := {
 	"fceumm": "res://roms/sample.nes",
 	"bsnes": "res://roms/sample.sfc",
-	"mupen64plus_next": "res://roms/sample.v64",
+	"mupen64plus_next": "res://roms/sample.z64",
 	"gambatte": "res://roms/sample.gbc",
 	"mgba": "res://roms/sample.gba",
 }

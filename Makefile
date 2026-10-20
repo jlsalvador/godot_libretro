@@ -110,7 +110,7 @@ endif
 package_run = $(call run_in,$(HOST_ARCH))
 
 # Libretro cores. Each has its submodule tree, a sample ROM (from
-# tools/sample_roms) and, for the make-based ones, the arguments of its
+# tools/samples) and, for the make-based ones, the arguments of its
 # upstream build. The license file staged in the zips is the first of
 # CORE_LICENSE_CANDIDATES present in the pinned tree (none: packaging fails).
 # Every core zip also stages SOURCE, naming the pinned tree it was built from.
@@ -126,7 +126,7 @@ core_dir_mgba := libretro-mgba
 
 core_rom_fceumm := sample.nes
 core_rom_bsnes := sample.sfc
-core_rom_mupen64plus_next := sample.v64
+core_rom_mupen64plus_next := sample.z64
 core_rom_gambatte := sample.gbc
 core_rom_mgba := sample.gba
 
@@ -305,10 +305,10 @@ core-debug-mgba: build/libretro-debug/$(ARCH)/mgba_libretro.so ## mGBA (with deb
 cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All five cores (with debug info) for ARCH.
 cores-debug-all: $(CORE_SO_DEBUG) ## All five cores (with debug info) for both arches.
 
-# One original sample ROM per core, compiled from tools/sample_roms.
-$(ROMS_STAMP): $(wildcard tools/sample_roms/*)
+# One original sample ROM per core, compiled from tools/samples.
+$(ROMS_STAMP): $(wildcard tools/samples/*)
 	@mkdir -p $(@D)
-	python3 tools/sample_roms/make_sample_roms.py $(@D)
+	python3 tools/samples/all.py $(@D)
 	@touch $@
 roms: $(ROMS_STAMP) ## Build the sample ROMs.
 
