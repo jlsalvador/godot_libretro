@@ -165,6 +165,7 @@ bool LibretroSession::load_core(const String &p_path) {
 	} else {
 		save_directory = save_directory_override;
 	}
+	save_directory_core = String(save_directory.c_str()).path_join(String(core_id.c_str())).utf8().get_data();
 	DirAccess::make_dir_recursive_absolute(String(system_directory.c_str()));
 	DirAccess::make_dir_recursive_absolute(String(save_directory.c_str()));
 	{
@@ -302,6 +303,7 @@ void LibretroSession::stop() {
 	video_width = 0;
 	video_height = 0;
 	video_frames_received = 0;
+	save_directory_core.clear();
 	save_ram_path.clear();
 	frames_since_save = 0;
 	get_memory_data = nullptr;
@@ -522,7 +524,12 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			return false;
 		case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
 			if (p_data) {
-				*static_cast<const char **>(p_data) = active_session->save_directory.c_str();
+				// Cores that persist their own state (e.g. bsnes) store
+				// their saves under this directory; serve the same
+				// <core id> subfolder the extension uses for its own
+				// SRAM sidecar (save_ram_path) so that every core's
+				// saves share one layout.
+				*static_cast<const char **>(p_data) = active_session->save_directory_core.c_str();
 				return true;
 			}
 			return false;

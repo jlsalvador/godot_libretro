@@ -74,6 +74,7 @@ class LibretroSession : public RefCounted {
 	std::string system_directory;
 	std::string save_directory;
 	std::string save_directory_override;
+	std::string save_directory_core;
 	std::string save_ram_path;
 	std::string last_error;
 	std::string core_name;
