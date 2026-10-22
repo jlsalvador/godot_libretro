@@ -244,9 +244,13 @@ class MipsAssembler:
                     raise ValueError(f"branch to {name} is out of range")
                 self.words[position] = (word & 0xFFFF0000) | (delta & 0xFFFF)
             else:
-                if ((self.origin + position * 4 + 4) & 0xF0000000) != (target & 0xF0000000):
+                if ((self.origin + position * 4 + 4) & 0xF0000000) != (
+                    target & 0xF0000000
+                ):
                     raise ValueError(f"jump to {name} crosses a 256 MiB region")
-                self.words[position] = (word & 0xFC000000) | ((target >> 2) & 0x03FFFFFF)
+                self.words[position] = (word & 0xFC000000) | (
+                    (target >> 2) & 0x03FFFFFF
+                )
         return b"".join(struct.pack(">I", word) for word in self.words)
 
 
@@ -569,7 +573,7 @@ def cic6102_checksum(data: bytes, seed: int = CRC_SEED_6102) -> tuple[int, int]:
         raise ValueError("image is too small for the checksum region")
     t1 = t2 = t3 = t4 = t5 = t6 = seed
     for offset in range(CRC_REGION_OFFSET, CRC_REGION_OFFSET + CRC_REGION_SIZE, 4):
-        value = int.from_bytes(data[offset:offset + 4], "big")
+        value = int.from_bytes(data[offset : offset + 4], "big")
         total = (t6 + value) & MASK32
         if total < value:
             t4 = (t4 + 1) & MASK32
@@ -579,7 +583,11 @@ def cic6102_checksum(data: bytes, seed: int = CRC_SEED_6102) -> tuple[int, int]:
         else:
             t3 ^= t4 ^ value
         shift = value & 31
-        rotated = value if shift == 0 else ((value << shift) | (value >> (32 - shift))) & MASK32
+        rotated = (
+            value
+            if shift == 0
+            else ((value << shift) | (value >> (32 - shift))) & MASK32
+        )
         t5 = (t5 + rotated) & MASK32
         if t2 > value:
             t2 ^= rotated
@@ -595,27 +603,35 @@ def build() -> bytes:
         raise ValueError("program does not fit in the boot-loaded region")
 
     rom = bytearray(ROM_SIZE)
-    rom[0:4] = bytes.fromhex("80371240")
+    rom[0:4] = bytes.fromhex("80371240")  # Z64 big endian
     rom[4:8] = (0x0000000F).to_bytes(4, "big")
     rom[8:12] = PROGRAM_RAM_ORIGIN.to_bytes(4, "big")
     rom[12:16] = bytes(4)
-    rom[0x20:0x34] = b"MUPEN64PLUS-NEXT".ljust(20, b"\x00")
-    rom[0x38:0x3C] = b"OPEN"
-    rom[0x3C:0x3E] = b"\x44\x45"
-    rom[0x3E] = ord("E")
-    rom[0x3F] = 0x30
-    rom[IPL3_OFFSET:IPL3_OFFSET + IPL3_SIZE] = ipl3
-    rom[PROGRAM_ROM_OFFSET:PROGRAM_ROM_OFFSET + len(program)] = program
+    rom[0x20:0x34] = b"MUPEN64PLUS-NEXT".ljust(20, b"\x00")  # Internal ROM name
+    rom[0x38:0x3C] = b"OPEN"  # Cartridge media format identifier
+    rom[0x3C:0x3E] = b"ED"  # Homebrew header Game ID
+    rom[0x3E:0x3F] = b"\x00"  # Region free (homebrew)
+    rom[0x3F] = 0x30  # Savetype: 3 = 256K SRAM
+    rom[IPL3_OFFSET : IPL3_OFFSET + IPL3_SIZE] = ipl3
+    rom[PROGRAM_ROM_OFFSET : PROGRAM_ROM_OFFSET + len(program)] = program
 
-    crc1, crc2 = cic6102_checksum(rom)
+    crc1, crc2 = cic6102_checksum(bytes(rom))
     rom[0x10:0x14] = crc1.to_bytes(4, "big")
     rom[0x14:0x18] = crc2.to_bytes(4, "big")
     return bytes(rom)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build the mupen64plus-next sample ROM.")
-    parser.add_argument("output", nargs="?", type=Path, default=Path("sample.z64"), help="output image path")
+    parser = argparse.ArgumentParser(
+        description="Build the mupen64plus-next sample ROM."
+    )
+    parser.add_argument(
+        "output",
+        nargs="?",
+        type=Path,
+        default=Path("sample.z64"),
+        help="output image path",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -628,8 +644,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {args.output} ({len(rom)} bytes)")
     print(f"bootstrap size: {len(build_ipl3())} bytes")
     print(f"program size: {len(build_program())} bytes")
-    print(f"checksum: {int.from_bytes(rom[0x10:0x14], 'big'):08X} "
-          f"{int.from_bytes(rom[0x14:0x18], 'big'):08X}")
+    print(
+        f"checksum: {int.from_bytes(rom[0x10:0x14], 'big'):08X} "
+        f"{int.from_bytes(rom[0x14:0x18], 'big'):08X}"
+    )
     print("target: emulator boot emulation; physical hardware is not supported")
     return 0
 
