@@ -25,6 +25,7 @@ import fceumm
 import gambatte
 import mgba
 import mupen64plus_next
+import pcsx_rearmed
 
 
 BUILDERS = {
@@ -33,6 +34,7 @@ BUILDERS = {
 	"sample.z64": mupen64plus_next.build,
 	"sample.gbc": gambatte.build,
 	"sample.gba": mgba.build,
+	"sample.exe": pcsx_rearmed.build,
 }
 
 
