@@ -19,3 +19,6 @@
 [submodule "third_party/libretro-common"]
 	path = third_party/libretro-common
 	url = https://github.com/libretro/libretro-common.git
+[submodule "third_party/libretro-pcsx_rearmed"]
+	path = third_party/libretro-pcsx_rearmed
+	url = https://github.com/libretro/pcsx_rearmed.git
