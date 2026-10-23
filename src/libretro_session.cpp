@@ -244,21 +244,29 @@ bool LibretroSession::load_game(const String &p_path) {
 		return false;
 	}
 	uint64_t file_size = file->get_length();
-	if (file_size == 0 || file_size > 64 * 1024 * 1024) {
-		last_error = "ROM file is empty or larger than 64 MiB.";
+	if (file_size == 0) {
+		last_error = "ROM file is empty.";
 		return false;
 	}
-	rom_data = file->get_buffer(file_size);
 	rom_path = p_path.utf8().get_data();
-	if (rom_data.size() != file_size) {
-		last_error = "Could not read complete ROM file.";
-		return false;
+	// Files above this size load by path only: the core opens the file
+	// itself, and reading it in here would only cost memory (the largest
+	// supported ROMs are 400+ MiB disc images).
+	const bool path_only = file_size > 64 * 1024 * 1024;
+	if (!path_only) {
+		rom_data = file->get_buffer(file_size);
+		if (rom_data.size() != file_size) {
+			last_error = "Could not read complete ROM file.";
+			return false;
+		}
+	} else {
+		rom_data.clear();
 	}
 
 	retro_game_info game = {};
 	game.path = rom_path.c_str();
-	game.data = rom_data.ptr();
-	game.size = rom_data.size();
+	game.data = path_only ? nullptr : rom_data.ptr();
+	game.size = path_only ? 0 : rom_data.size();
 	{
 		ActiveSessionScope active_scope(this);
 		if (!core_load_game(&game)) {

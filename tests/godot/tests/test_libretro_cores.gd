@@ -126,6 +126,21 @@ func _run_test() -> void:
 					break
 			if not bios_found:
 				failures.append("pcsx_rearmed bios: no BIOS file found in the system directory")
+	# Large ROMs load by path only: a file above the session's 64 MiB
+	# read-in limit must reach the core instead of being rejected.
+	var big_path := ProjectSettings.globalize_path("res://build/big_sparse.img")
+	var big_file := FileAccess.open(big_path, FileAccess.WRITE)
+	big_file.seek(67 * 1024 * 1024 - 1)
+	big_file.store_8(0)
+	big_file.close()
+	var big_session := LibretroSession.new()
+	var big_core_path := ProjectSettings.globalize_path(CORES["pcsx_rearmed"] % arch)
+	if not big_session.load_core(big_core_path):
+		failures.append("pcsx_rearmed large: failed to load: %s" % [big_session.get_last_error()])
+	else:
+		big_session.load_game(big_path)
+		if big_session.get_last_error().contains("64 MiB"):
+			failures.append("pcsx_rearmed large: the size gate still rejects large ROMs: %s" % [big_session.get_last_error()])
 	if failures.is_empty():
 		print("All Libretro cores loaded and ran their sample game: %s" % ", ".join(CORES.keys()))
 		quit(0)
