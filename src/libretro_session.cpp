@@ -460,6 +460,7 @@ void LibretroSession::set_controller_port_device(int p_port, unsigned p_device) 
 	if (p_port < 0 || p_port >= static_cast<int>(MAX_PLAYERS) || controller_port_device == nullptr || !core_initialized) {
 		return;
 	}
+	ActiveSessionScope active_scope(this);
 	controller_port_device(static_cast<unsigned>(p_port), p_device);
 }
 

@@ -12,10 +12,12 @@ Behaviour (same as the other sample ROMs):
     signature "SV". A missing save is created with the counter at 1; afterwards
     the counter is incremented and written back once per second. An existing
     save is found by name and its counter is kept
-  * on every new button press (any of the 16 buttons of pad 1, edge detected per
-    button) the colour advances immediately, and SPU voice 1 plays a ~440 Hz
-    square tone for as long as at least one button is held. The 1-second timer
-    is independent of the presses and never restarts
+  * on every new press (any of the 16 buttons of pad 1, or a deflected
+    stick of the dual-stick rumble gamepad — a virtual 17th press — edge
+    detected per press) the colour advances immediately, and SPU voice 1
+    plays a ~440 Hz square tone for as long as at least one button or
+    stick is held. The 1-second timer is independent of the presses and
+    never restarts
 
 How it works:
 
@@ -33,8 +35,11 @@ How it works:
     is uploaded to sound RAM; voice 0 is switched to noise mode, voice 1 plays
     the block at pitch 0x478 (~440 Hz) while a button is held (KON on the
     press, KOFF on release)
-  * SIO0: the digital pad is polled with the 0x01/0x42 protocol; the memory
-    card with the 0x81 0x52 (read frame) / 0x81 0x57 (write frame) commands
+  * SIO0: the dual-stick rumble gamepad is entered into config mode once
+    (0x01/0x43/0x01) and then polled with the 0x01/0x42 protocol, whose
+    8-byte response ends in the four 8-bit stick bytes (centre 0x80); a
+    stick outside the 0x70..0x90 band counts as a press; the memory card
+    uses the 0x81 0x52 (read frame) / 0x81 0x57 (write frame) commands
   * memory card layout: directory entry in frame N (1..15), and the file's
     block N (frames 64N...64N+63): title frame, icon frame, data frame at +2.
     The directory is scanned for an entry with our name, else for a free one.
@@ -329,6 +334,7 @@ def build() -> bytes:
     a("sh $t0, 0x104E($s0)")              # baud 250 kHz
     a("sh $zero, 0x104A($s0)")
 
+    a("jal pad_init_analog")             # dual-stick rumble gamepad config mode: sticks readable
     a("jal save_init")                    # find / create the save, load the counter
 
     # ---- first colour --------------------------------------------------------------------------------
@@ -459,7 +465,32 @@ def build() -> bytes:
     a("sh $t0, 0x104A($s0)")              # keep selected, acknowledge the IRQ flag
     a("jr $ra")
 
-    # ---- read_pad: v0 = pressed buttons of pad 1 (16 bits, bit set = pressed) --------------------------------------------
+    # ---- pad_init_analog: enter the dual-stick rumble gamepad config mode
+    # once (0x01/0x43/0x01); from then on the 0x42 read returns the 8-byte
+    # response with the sticks
+    a.label("pad_init_analog")
+    push_ra()
+    a("li $t0, 0x1003")
+    a("sh $t0, 0x104A($s0)")              # select slot 1
+    a("li $a0, 0x01")
+    a("jal sio_xfer")
+    a("li $a0, 0x43")
+    a("jal sio_xfer")
+    a("li $a0, 0x01")                     # config mode on
+    a("jal sio_xfer")
+    a("li $a0, 0x5A")
+    a("jal sio_xfer")
+    a("li $a0, 0")
+    a("jal sio_xfer")
+    a("li $a0, 0")
+    a("jal sio_xfer_last")
+    a("sh $zero, 0x104A($s0)")            # deselect
+    pop_ra()
+    a("jr $ra")
+    # ---- read_pad: v0 = pressed buttons of pad 1 (bit set = pressed); bit 15 is a
+    # virtual press set while any stick of the dual-stick rumble gamepad is
+    # deflected, so the sticks react like buttons (the 8-byte response is read
+    # in config mode)
     a.label("read_pad")
     push_ra()
     a("li $t0, 0x1003")
@@ -475,16 +506,41 @@ def build() -> bytes:
     a("jal sio_xfer")                     # buttons, low byte (0 = pressed)
     a("move $t8, $v0")
     a("li $a0, 0")
-    a("jal sio_xfer_last")                # buttons, high byte
-    a("sll $v0, $v0, 8")
-    a("or $v0, $v0, $t8")
-    a("nor $v0, $v0, $zero")
-    a("andi $v0, $v0, 0xFFFF")
+    a("jal sio_xfer")                     # buttons, high byte
+    a("sll $t1, $v0, 8")
+    a("or $t1, $t1, $t8")
+    a("move $a2, $t1")                    # buttons (a2 survives the xfers below)
+    a("li $a0, 0")
+    a("jal sio_xfer")                     # right joy X
+    a("move $t2, $v0")
+    a("li $a0, 0")
+    a("jal sio_xfer")                     # right joy Y
+    a("move $t3, $v0")
+    a("li $a0, 0")
+    a("jal sio_xfer")                     # left joy X
+    a("move $t4, $v0")
+    a("li $a0, 0")
+    a("jal sio_xfer_last")                # left joy Y
     a("sh $zero, 0x104A($s0)")            # deselect
     a("li $t0, 0xFF")
     a("bne $t9, $t0, rp_ok")
+    a("move $a2, $zero")                  # nothing connected: rest
+    a("li $t2, 0x80")
+    a("li $t3, 0x80")
+    a("li $t4, 0x80")
     a("move $v0, $zero")
+    a("j rp_deflect")
     a.label("rp_ok")
+    a.label("rp_deflect")
+    a("li $t0, 0")                        # deflected flag
+    for axis in ("$t2", "$t3", "$t4", "$v0"):
+        a("slti $t5, " + axis + ", 0x70")
+        a("or $t0, $t0, $t5")
+        a("slti $t6, " + axis + ", 0x91")
+        a("xori $t6, $t6, 1")
+        a("or $t0, $t0, $t6")
+    a("sll $v0, $t0, 15")                # stick bit (the virtual press)
+    a("or $v0, $v0, $a2")                # buttons | stick bit
     pop_ra()
     a("jr $ra")
 
