@@ -6,6 +6,7 @@
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
+#include <godot_cpp/variant/vector2.hpp>
 #include <array>
 #include <cstdarg>
 #include <cstddef>
@@ -42,6 +43,8 @@ class LibretroSession : public RefCounted {
 	using RetroRun = void (*)();
 	using RetroGetMemoryData = void *(*)(unsigned);
 	using RetroGetMemorySize = size_t (*)(unsigned);
+	using RetroSetControllerPortDevice = void (*)(unsigned, unsigned);
+	using RetroSetRumbleState = bool (*)(unsigned, retro_rumble_effect, uint16_t);
 
 	void *core_handle = nullptr;
 	bool core_initialized = false;
@@ -70,6 +73,7 @@ class LibretroSession : public RefCounted {
 	RetroRun run_core = nullptr;
 	RetroGetMemoryData get_memory_data = nullptr;
 	RetroGetMemorySize get_memory_size = nullptr;
+	RetroSetControllerPortDevice controller_port_device = nullptr;
 
 	PackedByteArray rom_data;
 	std::string rom_path;
@@ -92,6 +96,10 @@ class LibretroSession : public RefCounted {
 	// polls each port independently.
 	std::array<std::array<bool, 16>, MAX_PLAYERS> port_buttons = {};
 	std::array<std::array<int16_t, 4>, MAX_PLAYERS> port_axes = {};
+	// Per-port rumble strength (0..1) set by the core through the rumble
+	// interface: 0 = strong (large) motor, 1 = weak (small) motor.
+	std::array<std::array<float, 2>, MAX_PLAYERS> port_rumble = {};
+	bool rumble_interface_taken = false;
 	std::map<std::string, std::string> core_option_defaults;
 	std::map<std::string, std::string> core_option_overrides;
 	std::map<std::string, std::string> core_option_resolved;
@@ -117,6 +125,7 @@ class LibretroSession : public RefCounted {
 
 	static bool _environment_callback(unsigned command, void *data);
 	static void _log_callback(retro_log_level level, const char *format, ...);
+	static bool _set_rumble_state(unsigned p_port, retro_rumble_effect p_effect, uint16_t p_strength);
 	static void _video_refresh_callback(const void *data, unsigned width, unsigned height, size_t pitch);
 	static void _audio_sample_callback(int16_t left, int16_t right);
 	static size_t _audio_sample_batch_callback(const int16_t *data, size_t frames);
@@ -157,6 +166,11 @@ public:
 
 	void set_joypad_button(int port, int button_id, bool pressed);
 	void set_analog_axis(int port, int axis_id, float value);
+	void set_controller_port_device(int port, unsigned device);
+	bool get_joypad_button(int port, int button_id) const;
+	float get_analog_axis(int port, int axis) const;
+	Vector2 get_rumble(int port) const;
+	bool has_rumble_interface() const;
 	void set_core_option(const String &key, const String &value);
 	String get_core_option(const String &key) const;
 

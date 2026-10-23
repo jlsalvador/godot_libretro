@@ -66,6 +66,11 @@ void LibretroSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("stop"), &LibretroSession::stop);
 	ClassDB::bind_method(D_METHOD("set_joypad_button", "port", "button_id", "pressed"), &LibretroSession::set_joypad_button);
 	ClassDB::bind_method(D_METHOD("set_analog_axis", "port", "axis_id", "value"), &LibretroSession::set_analog_axis);
+	ClassDB::bind_method(D_METHOD("set_controller_port_device", "port", "device"), &LibretroSession::set_controller_port_device);
+	ClassDB::bind_method(D_METHOD("get_joypad_button", "port", "button_id"), &LibretroSession::get_joypad_button);
+	ClassDB::bind_method(D_METHOD("get_analog_axis", "port", "axis"), &LibretroSession::get_analog_axis);
+	ClassDB::bind_method(D_METHOD("get_rumble", "port"), &LibretroSession::get_rumble);
+	ClassDB::bind_method(D_METHOD("has_rumble_interface"), &LibretroSession::has_rumble_interface);
 	ClassDB::bind_method(D_METHOD("set_core_option", "key", "value"), &LibretroSession::set_core_option);
 	ClassDB::bind_method(D_METHOD("get_core_option", "key"), &LibretroSession::get_core_option);
 	ClassDB::bind_method(D_METHOD("get_video_frame"), &LibretroSession::get_video_frame);
@@ -114,6 +119,7 @@ bool LibretroSession::_resolve_symbols() {
 			resolve_symbol(core_handle, run_core, "retro_run", last_error);
 	get_memory_data = reinterpret_cast<RetroGetMemoryData>(dlsym(core_handle, "retro_get_memory_data"));
 	get_memory_size = reinterpret_cast<RetroGetMemorySize>(dlsym(core_handle, "retro_get_memory_size"));
+	controller_port_device = reinterpret_cast<RetroSetControllerPortDevice>(dlsym(core_handle, "retro_set_controller_port_device"));
 	return required_symbols;
 }
 
@@ -348,6 +354,7 @@ void LibretroSession::stop() {
 	save_directory_core.clear();
 	save_ram_path.clear();
 	frames_since_save = 0;
+	port_rumble = {};
 	get_memory_data = nullptr;
 	get_memory_size = nullptr;
 }
@@ -449,6 +456,38 @@ void LibretroSession::set_analog_axis(int p_port, int p_axis_id, float p_value) 
 	port_axes[p_port][p_axis_id] = static_cast<int16_t>(clamped * 32767.0f);
 }
 
+void LibretroSession::set_controller_port_device(int p_port, unsigned p_device) {
+	if (p_port < 0 || p_port >= static_cast<int>(MAX_PLAYERS) || controller_port_device == nullptr || !core_initialized) {
+		return;
+	}
+	controller_port_device(static_cast<unsigned>(p_port), p_device);
+}
+
+bool LibretroSession::get_joypad_button(int p_port, int p_button_id) const {
+	if (p_port < 0 || p_port >= static_cast<int>(MAX_PLAYERS) || p_button_id < 0 || p_button_id >= static_cast<int>(port_buttons[p_port].size())) {
+		return false;
+	}
+	return port_buttons[p_port][p_button_id];
+}
+
+float LibretroSession::get_analog_axis(int p_port, int p_axis) const {
+	if (p_port < 0 || p_port >= static_cast<int>(MAX_PLAYERS) || p_axis < 0 || p_axis >= static_cast<int>(port_axes[p_port].size())) {
+		return 0.0f;
+	}
+	return static_cast<float>(port_axes[p_port][p_axis]) / 32767.0f;
+}
+
+Vector2 LibretroSession::get_rumble(int p_port) const {
+	if (p_port < 0 || p_port >= static_cast<int>(MAX_PLAYERS)) {
+		return Vector2();
+	}
+	return Vector2(port_rumble[p_port][0], port_rumble[p_port][1]);
+}
+
+bool LibretroSession::has_rumble_interface() const {
+	return rumble_interface_taken;
+}
+
 void LibretroSession::set_core_option(const String &p_key, const String &p_value) {
 	const std::string key = p_key.utf8().get_data();
 	const std::string value = p_value.utf8().get_data();
@@ -534,6 +573,14 @@ double LibretroSession::get_audio_sample_rate() const { return audio_sample_rate
 bool LibretroSession::is_core_loaded() const { return core_initialized; }
 bool LibretroSession::is_game_loaded() const { return game_loaded; }
 
+bool LibretroSession::_set_rumble_state(unsigned p_port, retro_rumble_effect p_effect, uint16_t p_strength) {
+	if (active_session == nullptr || p_port >= MAX_PLAYERS || (p_effect != RETRO_RUMBLE_STRONG && p_effect != RETRO_RUMBLE_WEAK)) {
+		return false;
+	}
+	active_session->port_rumble[p_port][p_effect == RETRO_RUMBLE_STRONG ? 0 : 1] = static_cast<float>(p_strength) / 65535.0f;
+	return true;
+}
+
 bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 	if (!active_session) {
 		return false;
@@ -558,6 +605,15 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 				return true;
 			}
 			return false;
+		case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: {
+			if (!p_data) {
+				return false;
+			}
+			auto *rumble = static_cast<struct retro_rumble_interface *>(p_data);
+			rumble->set_rumble_state = &LibretroSession::_set_rumble_state;
+			active_session->rumble_interface_taken = true;
+			return true;
+		}
 		case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
 			if (p_data) {
 				*static_cast<const char **>(p_data) = active_session->system_directory.c_str();
