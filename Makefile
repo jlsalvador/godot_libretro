@@ -498,7 +498,16 @@ $(EXT_ZIP): $(EXT_LIBS) LICENSE
 			mkdir -p $$dir && cp build/godot_libretro/$$a/$$v/libgodot_libretro.so $$dir/ || exit 1; \
 		done; \
 	done
-	mkdir -p build/package/addons/godot_libretro && cp LICENSE build/package/addons/godot_libretro/
+	mkdir -p build/package/addons/godot_libretro
+	cp LICENSE build/package/addons/godot_libretro/
+	cp tests/godot/addons/godot_libretro/godot_libretro.gdextension build/package/addons/godot_libretro/
+	@for f in godot_libretro.gdextension LICENSE \
+		.bin/linux/template_debug/arm64/libgodot_libretro.so \
+		.bin/linux/template_debug/x86_64/libgodot_libretro.so \
+		.bin/linux/template_release/arm64/libgodot_libretro.so \
+		.bin/linux/template_release/x86_64/libgodot_libretro.so; do \
+		test -f build/package/addons/godot_libretro/$$f || { echo "extension package is missing $$f" >&2; exit 1; }; \
+	done
 	$(package_run) 'cd build/package && zip -9 -rX ../../$@ addons'
 
 release-zips: $(CORE_ZIPS_RELEASE) ## Release (stripped) core zips, with LICENSE, SOURCE and the sample ROM.
