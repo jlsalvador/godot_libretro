@@ -2,6 +2,7 @@
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -10,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <map>
 #include <string>
 #include <vector>
@@ -72,6 +74,7 @@ class LibretroSession : public RefCounted {
 	std::string rom_path;
 	std::string core_id;
 	std::string system_directory;
+	std::string system_directory_override;
 	std::string save_directory;
 	std::string save_directory_override;
 	std::string save_directory_core;
@@ -91,6 +94,11 @@ class LibretroSession : public RefCounted {
 	std::map<std::string, std::string> core_option_defaults;
 	std::map<std::string, std::string> core_option_overrides;
 	std::map<std::string, std::string> core_option_resolved;
+	// Tail of the core's log, as formatted by its log interface. The core
+	// logs through a C varargs callback; the lines are kept for inspection
+	// (a BIOS lookup report, a load error) without a live console.
+	static constexpr size_t CORE_LOG_LINES_MAX = 1024;
+	std::deque<std::string> core_log_lines;
 	unsigned video_width = 0;
 	unsigned video_height = 0;
 	unsigned video_frames_received = 0;
@@ -139,6 +147,9 @@ public:
 	void set_save_directory(const String &path);
 	String get_save_directory() const;
 	String get_save_ram_path() const;
+	void set_system_directory(const String &path);
+	String get_system_directory() const;
+	PackedStringArray get_core_log_lines() const;
 	bool load_game(const String &path);
 	void run_frame();
 	void stop();

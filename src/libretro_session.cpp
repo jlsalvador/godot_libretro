@@ -58,6 +58,9 @@ void LibretroSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_save_directory", "path"), &LibretroSession::set_save_directory);
 	ClassDB::bind_method(D_METHOD("get_save_directory"), &LibretroSession::get_save_directory);
 	ClassDB::bind_method(D_METHOD("get_save_ram_path"), &LibretroSession::get_save_ram_path);
+	ClassDB::bind_method(D_METHOD("set_system_directory", "path"), &LibretroSession::set_system_directory);
+	ClassDB::bind_method(D_METHOD("get_system_directory"), &LibretroSession::get_system_directory);
+	ClassDB::bind_method(D_METHOD("get_core_log_lines"), &LibretroSession::get_core_log_lines);
 	ClassDB::bind_method(D_METHOD("load_game", "path"), &LibretroSession::load_game);
 	ClassDB::bind_method(D_METHOD("run_frame"), &LibretroSession::run_frame);
 	ClassDB::bind_method(D_METHOD("stop"), &LibretroSession::stop);
@@ -158,7 +161,14 @@ bool LibretroSession::load_core(const String &p_path) {
 		return false;
 	}
 
-	system_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/system";
+	// One system directory per core: the libretro spec hands each core a
+	// directory for system files (BIOS, caches); the default base is the
+	// Godot user data directory, overridable per session.
+	if (system_directory_override.empty()) {
+		system_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/system/" + core_id;
+	} else {
+		system_directory = system_directory_override;
+	}
 	if (save_directory_override.empty()) {
 		String executable_save_directory = OS::get_singleton()->get_executable_path().get_base_dir().path_join("saves");
 		save_directory = executable_save_directory.utf8().get_data();
@@ -198,6 +208,22 @@ String LibretroSession::get_save_directory() const {
 
 String LibretroSession::get_save_ram_path() const {
 	return String(save_ram_path.c_str());
+}
+
+void LibretroSession::set_system_directory(const String &p_path) {
+	system_directory_override = p_path.utf8().get_data();
+}
+
+String LibretroSession::get_system_directory() const {
+	return String(system_directory.c_str());
+}
+
+PackedStringArray LibretroSession::get_core_log_lines() const {
+	PackedStringArray lines;
+	for (const std::string &line : core_log_lines) {
+		lines.append(String(line.c_str()));
+	}
+	return lines;
 }
 
 bool LibretroSession::load_game(const String &p_path) {
@@ -613,6 +639,16 @@ void LibretroSession::_log_callback(retro_log_level p_level, const char *p_forma
 	va_start(args, p_format);
 	vsnprintf(buffer, sizeof(buffer), p_format, args);
 	va_end(args);
+	if (active_session) {
+		std::string line = buffer;
+		while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+			line.pop_back();
+		}
+		active_session->core_log_lines.push_back(line);
+		while (active_session->core_log_lines.size() > CORE_LOG_LINES_MAX) {
+			active_session->core_log_lines.pop_front();
+		}
+	}
 	const char *prefix = "Libretro";
 	switch (p_level) {
 		case RETRO_LOG_DEBUG:

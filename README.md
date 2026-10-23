@@ -54,6 +54,15 @@ SOURCE file names the upstream repository and the exact pinned commit, so
 the complete corresponding source of every binary is available there; the
 trees are built unmodified.
 
+## BIOS files
+
+`pcsx_rearmed` looks for its BIOS files (`scph5500.bin`, `scph5501.bin`,
+`scph5502.bin`) in the session's system directory, which defaults to
+`<user data dir>/system/<core id>` and can be pointed elsewhere with
+`set_system_directory()`. The files are not shipped; without them the core
+falls back to its built-in HLE BIOS. The core executes a found BIOS image
+at game load, so the directory should only hold genuine BIOS files.
+
 ## Building
 
 Prerequisites: podman, and the submodules at their pinned commits (single
