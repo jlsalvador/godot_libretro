@@ -126,8 +126,9 @@ func _run_test() -> void:
 					break
 			if not bios_found:
 				failures.append("pcsx_rearmed bios: no BIOS file found in the system directory")
-	# Large ROMs load by path only: a file above the session's 64 MiB
-	# read-in limit must reach the core instead of being rejected.
+	# Large ROMs: conformant cores receive a path only (a 67 MiB file
+	# must reach the core), and the data-reading cores keep their 64 MiB
+	# cap as a load error instead of a giant allocation.
 	var big_path := ProjectSettings.globalize_path("res://build/big_sparse.img")
 	var big_file := FileAccess.open(big_path, FileAccess.WRITE)
 	big_file.seek(67 * 1024 * 1024 - 1)
@@ -140,7 +141,15 @@ func _run_test() -> void:
 	else:
 		big_session.load_game(big_path)
 		if big_session.get_last_error().contains("64 MiB"):
-			failures.append("pcsx_rearmed large: the size gate still rejects large ROMs: %s" % [big_session.get_last_error()])
+			failures.append("pcsx_rearmed large: the path-only load rejected a large ROM: %s" % [big_session.get_last_error()])
+	var cap_session := LibretroSession.new()
+	var cap_core_path := ProjectSettings.globalize_path(CORES["gambatte"] % arch)
+	if not cap_session.load_core(cap_core_path):
+		failures.append("gambatte cap: failed to load: %s" % [cap_session.get_last_error()])
+	else:
+		cap_session.load_game(big_path)
+		if not cap_session.get_last_error().contains("64 MiB"):
+			failures.append("gambatte cap: the data cap did not reject a large ROM: %s" % [cap_session.get_last_error()])
 	if failures.is_empty():
 		print("All Libretro cores loaded and ran their sample game: %s" % ", ".join(CORES.keys()))
 		quit(0)

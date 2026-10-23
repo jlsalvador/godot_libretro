@@ -249,11 +249,19 @@ bool LibretroSession::load_game(const String &p_path) {
 		return false;
 	}
 	rom_path = p_path.utf8().get_data();
-	// Files above this size load by path only: the core opens the file
-	// itself, and reading it in here would only cost memory (the largest
-	// supported ROMs are 400+ MiB disc images).
-	const bool path_only = file_size > 64 * 1024 * 1024;
-	if (!path_only) {
+	// Most cores open the file themselves from game.path. A few upstream
+	// frontends are non-conformant and read game.data unconditionally
+	// (bsnes, gambatte, mupen64plus); only they get the file read in, capped at
+	// 64 MiB so the cap stays a load error, not a giant allocation.
+	static const std::set<std::string> data_cores = {
+		"bsnes_libretro", "gambatte_libretro", "mupen64plus_next_libretro",
+	};
+	const bool needs_data = data_cores.find(core_id) != data_cores.end();
+	if (needs_data) {
+		if (file_size > 64 * 1024 * 1024) {
+			last_error = "ROM file is larger than the 64 MiB data cap of this core.";
+			return false;
+		}
 		rom_data = file->get_buffer(file_size);
 		if (rom_data.size() != file_size) {
 			last_error = "Could not read complete ROM file.";
@@ -265,8 +273,8 @@ bool LibretroSession::load_game(const String &p_path) {
 
 	retro_game_info game = {};
 	game.path = rom_path.c_str();
-	game.data = path_only ? nullptr : rom_data.ptr();
-	game.size = path_only ? 0 : rom_data.size();
+	game.data = needs_data ? rom_data.ptr() : nullptr;
+	game.size = needs_data ? rom_data.size() : 0;
 	{
 		ActiveSessionScope active_scope(this);
 		if (!core_load_game(&game)) {
