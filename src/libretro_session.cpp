@@ -168,22 +168,29 @@ bool LibretroSession::load_core(const String &p_path) {
 	}
 
 	// One system directory per core: the libretro spec hands each core a
-	// directory for system files (BIOS, caches); the default base is the
-	// Godot user data directory, overridable per session.
+	// directory for system files (BIOS, caches). Both default bases live
+	// under the Godot user data directory, overridable per session.
 	if (system_directory_override.empty()) {
 		system_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/system/" + core_id;
 	} else {
 		system_directory = system_directory_override;
 	}
 	if (save_directory_override.empty()) {
-		String executable_save_directory = OS::get_singleton()->get_executable_path().get_base_dir().path_join("saves");
-		save_directory = executable_save_directory.utf8().get_data();
+		save_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/saves";
 	} else {
 		save_directory = save_directory_override;
 	}
 	save_directory_core = String(save_directory.c_str()).path_join(String(core_id.c_str())).utf8().get_data();
-	DirAccess::make_dir_recursive_absolute(String(system_directory.c_str()));
-	DirAccess::make_dir_recursive_absolute(String(save_directory.c_str()));
+	if (DirAccess::make_dir_recursive_absolute(String(system_directory.c_str())) != Error::OK) {
+		last_error = std::string("Could not create the system directory: ") + system_directory;
+		stop();
+		return false;
+	}
+	if (DirAccess::make_dir_recursive_absolute(String(save_directory.c_str())) != Error::OK) {
+		last_error = std::string("Could not create the save directory: ") + save_directory;
+		stop();
+		return false;
+	}
 	{
 		ActiveSessionScope active_scope(this);
 		set_environment(_environment_callback);
@@ -294,7 +301,12 @@ bool LibretroSession::load_game(const String &p_path) {
 		return false;
 	}
 	String core_save_directory = String(save_directory.c_str()).path_join(String(core_id.c_str()));
-	DirAccess::make_dir_recursive_absolute(core_save_directory);
+	if (DirAccess::make_dir_recursive_absolute(core_save_directory) != Error::OK) {
+		core_unload_game();
+		game_loaded = false;
+		last_error = std::string("Could not create the save directory: ") + core_save_directory.utf8().get_data();
+		return false;
+	}
 	save_ram_path = core_save_directory.path_join(p_path.get_file().get_basename() + ".srm").utf8().get_data();
 		frames_since_save = 0;
 		_load_save_ram();

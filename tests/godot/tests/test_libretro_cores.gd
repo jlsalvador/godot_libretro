@@ -98,6 +98,24 @@ func _run_test() -> void:
 			video_frames, audio_frames, elapsed_ms])
 		if video_frames < 120:
 			failures.append("%s: expected 120 video frames from the sample game, got %d" % [core_id, video_frames])
+		# The sample ROM keeps a battery-backed save: after the run the
+		# session must have written <save dir>/<core file>/sample.srm with
+		# written data (the save is flushed when the session stops).
+		session.stop()
+		var save_path := ProjectSettings.globalize_path("res://build/core_info_saves").path_join(core_path.get_file().get_basename() + "/sample.srm")
+		var save_file := FileAccess.open(save_path, FileAccess.READ)
+		if save_file == null:
+			failures.append("%s: no save file at %s" % [core_id, save_path])
+		else:
+			var save_data := save_file.get_buffer(save_file.get_length())
+			save_file.close()
+			var wrote_data := false
+			for save_byte in save_data:
+				if save_byte != 0:
+					wrote_data = true
+					break
+			if not wrote_data:
+				failures.append("%s: save file has no written data" % core_id)
 	# BIOS lookup: the core must find a BIOS file in the session's system
 	# directory and report it through its log interface. The fixture is a
 	# 512 KiB file with the core's BIOS signature (00 08 3c 3f at offset 1);
@@ -139,6 +157,7 @@ func _run_test() -> void:
 	big_file.store_8(0)
 	big_file.close()
 	var big_session := LibretroSession.new()
+	big_session.set_save_directory(ProjectSettings.globalize_path("res://build/core_load_saves"))
 	var big_core_path := ProjectSettings.globalize_path(CORES["pcsx_rearmed"] % arch)
 	if not big_session.load_core(big_core_path):
 		failures.append("pcsx_rearmed large: failed to load: %s" % [big_session.get_last_error()])
@@ -147,6 +166,7 @@ func _run_test() -> void:
 		if big_session.get_last_error().contains("64 MiB"):
 			failures.append("pcsx_rearmed large: the path-only load rejected a large ROM: %s" % [big_session.get_last_error()])
 	var cap_session := LibretroSession.new()
+	cap_session.set_save_directory(ProjectSettings.globalize_path("res://build/core_load_saves"))
 	var cap_core_path := ProjectSettings.globalize_path(CORES["gambatte"] % arch)
 	if not cap_session.load_core(cap_core_path):
 		failures.append("gambatte cap: failed to load: %s" % [cap_session.get_last_error()])
