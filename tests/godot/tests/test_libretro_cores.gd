@@ -8,6 +8,7 @@ const CORES := {
 	"gambatte": "res://build/libretro/%s/gambatte_libretro.so",
 	"mgba": "res://build/libretro/%s/mgba_libretro.so",
 	"pcsx_rearmed": "res://build/libretro/%s/pcsx_rearmed_libretro.so",
+	"blastem": "res://build/libretro/%s/blastem_libretro.so",
 }
 
 
@@ -18,6 +19,7 @@ const SAMPLE_ROMS := {
 	"gambatte": "res://roms/sample.gbc",
 	"mgba": "res://roms/sample.gba",
 	"pcsx_rearmed": "res://roms/sample.exe",
+	"blastem": "res://roms/sample.bin",
 }
 
 
@@ -28,6 +30,7 @@ const EXPECTED_NAMES := {
 	"gambatte": "Gambatte",
 	"mgba": "mGBA",
 	"pcsx_rearmed": "PCSX-ReARMed",
+	"blastem": "BlastEm",
 }
 
 
@@ -38,6 +41,7 @@ const EXPECTED_EXTENSIONS := {
 	"gambatte": ["gb", "gbc"],
 	"mgba": ["gba"],
 	"pcsx_rearmed": ["exe"],
+	"blastem": ["md", "gen", "bin"],
 }
 
 

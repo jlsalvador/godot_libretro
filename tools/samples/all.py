@@ -20,6 +20,7 @@ from pathlib import Path
 # directory on sys.path so `import fceumm` etc. resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import blastem
 import bsnes
 import fceumm
 import gambatte
@@ -35,6 +36,7 @@ BUILDERS = {
 	"sample.gbc": gambatte.build,
 	"sample.gba": mgba.build,
 	"sample.exe": pcsx_rearmed.build,
+	"sample.bin": blastem.build,
 }
 
 
