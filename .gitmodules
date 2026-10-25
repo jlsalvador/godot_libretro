@@ -28,3 +28,6 @@
 [submodule "third_party/libretro-picodrive"]
 	path = third_party/libretro-picodrive
 	url = https://github.com/libretro/PicoDrive.git
+[submodule "third_party/libretro-genesis_plus_gx"]
+	path = third_party/libretro-genesis_plus_gx
+	url = https://github.com/libretro/Genesis-Plus-GX.git

@@ -3,7 +3,7 @@
 
 Every sample is an original test pattern (no game content): a minimal
 program for each system that boots in the matching Libretro core. Each
-core gets exactly one ROM, named `sample.<extension>` (the blastem and picodrive cores share `sample.bin`).
+core gets exactly one ROM, named `sample.<extension>` (the blastem, picodrive and genesis_plus_gx cores share `sample.bin`).
 
 The per-system byte-level builders live next to this script, one
 module per core, and are deliberately isolated so iterating on one system

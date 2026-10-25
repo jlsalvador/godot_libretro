@@ -10,6 +10,7 @@ const CORES := {
 	"pcsx_rearmed": "res://build/libretro/%s/pcsx_rearmed_libretro.so",
 	"blastem": "res://build/libretro/%s/blastem_libretro.so",
 	"picodrive": "res://build/libretro/%s/picodrive_libretro.so",
+	"genesis_plus_gx": "res://build/libretro/%s/genesis_plus_gx_libretro.so",
 }
 
 
@@ -22,6 +23,7 @@ const SAMPLE_ROMS := {
 	"pcsx_rearmed": "res://roms/sample.exe",
 	"blastem": "res://roms/sample.bin",
 	"picodrive": "res://roms/sample.bin",
+	"genesis_plus_gx": "res://roms/sample.bin",
 }
 
 
@@ -34,6 +36,7 @@ const EXPECTED_NAMES := {
 	"pcsx_rearmed": "PCSX-ReARMed",
 	"blastem": "BlastEm",
 	"picodrive": "PicoDrive",
+	"genesis_plus_gx": "Genesis Plus GX",
 }
 
 
@@ -46,6 +49,7 @@ const EXPECTED_EXTENSIONS := {
 	"pcsx_rearmed": ["exe"],
 	"blastem": ["md", "gen", "bin"],
 	"picodrive": ["md", "bin"],
+	"genesis_plus_gx": ["md", "bin"],
 }
 
 

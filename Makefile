@@ -114,7 +114,7 @@ package_run = $(call run_in,$(HOST_ARCH))
 # upstream build. The license file staged in the zips is the first of
 # CORE_LICENSE_CANDIDATES present in the pinned tree (none: packaging fails).
 # Every core zip also stages SOURCE, naming the pinned tree it was built from.
-CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba pcsx_rearmed blastem picodrive
+CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba pcsx_rearmed blastem picodrive genesis_plus_gx
 CORE_SOS := $(addsuffix _libretro.so,$(CORE_IDS))
 CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
 
@@ -126,6 +126,7 @@ core_dir_mgba := libretro-mgba
 core_dir_pcsx_rearmed := libretro-pcsx_rearmed
 core_dir_blastem := libretro-blastem
 core_dir_picodrive := libretro-picodrive
+core_dir_genesis_plus_gx := libretro-genesis_plus_gx
 
 core_rom_fceumm := sample.nes
 core_rom_bsnes := sample.sfc
@@ -135,6 +136,7 @@ core_rom_mgba := sample.gba
 core_rom_pcsx_rearmed := sample.exe
 core_rom_blastem := sample.bin
 core_rom_picodrive := sample.bin
+core_rom_genesis_plus_gx := sample.bin
 
 core_make_args_fceumm := -f Makefile.libretro platform=unix
 core_make_args_bsnes := -f Makefile platform=unix
@@ -145,13 +147,14 @@ core_make_args_gambatte := -f Makefile.libretro platform=unix
 core_make_args_pcsx_rearmed := -f Makefile.libretro platform=unix
 core_make_args_blastem := -f Makefile.libretro platform=unix
 core_make_args_picodrive := -f Makefile.libretro platform=unix
+core_make_args_genesis_plus_gx := -f Makefile.libretro platform=unix
 
 # The bare callback probe only boots the cores that need nothing beyond the
 # video/audio/input callbacks: measured, mupen64plus_next crashes (it asks for
 # the host Vulkan device) and gambatte rejects the ROM (it needs GET_CAN_DUPE),
 # both of which the Godot harness does provide. So those two are verified
 # through --symbols only, and through the extension in check-stripped-godot.
-BOOT_CORES := fceumm bsnes mgba pcsx_rearmed blastem picodrive
+BOOT_CORES := fceumm bsnes mgba pcsx_rearmed blastem picodrive genesis_plus_gx
 
 # CHECK_CORES narrows the gate to the cores this invocation actually built: CI
 # compiles one core per job, so a job must not demand that the other four exist.
@@ -197,8 +200,8 @@ TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
 	submodules toolchain-image toolchain-images $(TOOLCHAIN_TARGETS) \
 	check-image-arch $(CHECK_IMAGE_TARGETS) \
 	extension extension-variants extension-all \
-	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba core-pcsx-rearmed core-blastem core-picodrive \
-	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba core-debug-pcsx-rearmed core-debug-blastem core-debug-picodrive \
+	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba core-pcsx-rearmed core-blastem core-picodrive core-genesis-plus-gx \
+	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba core-debug-pcsx-rearmed core-debug-blastem core-debug-picodrive core-debug-genesis-plus-gx \
 	cores cores-all cores-debug cores-debug-all roms \
 	test-probe test-godot \
 	check-stripped check-stripped-all check-stripped-godot check-debug check-debug-all \
@@ -309,8 +312,9 @@ core-mgba: build/libretro/$(ARCH)/mgba_libretro.so ## mGBA for ARCH.
 core-pcsx-rearmed: build/libretro/$(ARCH)/pcsx_rearmed_libretro.so ## pcsx_rearmed for ARCH.
 core-blastem: build/libretro/$(ARCH)/blastem_libretro.so ## BlastEm for ARCH.
 core-picodrive: build/libretro/$(ARCH)/picodrive_libretro.so ## PicoDrive for ARCH.
-cores: $(foreach c,$(CORE_IDS),build/libretro/$(ARCH)/$(c)_libretro.so) ## All eight cores for ARCH.
-cores-all: $(CORE_SO_RELEASE) ## All eight cores for both arches.
+core-genesis-plus-gx: build/libretro/$(ARCH)/genesis_plus_gx_libretro.so ## Genesis Plus GX for ARCH.
+cores: $(foreach c,$(CORE_IDS),build/libretro/$(ARCH)/$(c)_libretro.so) ## All nine cores for ARCH.
+cores-all: $(CORE_SO_RELEASE) ## All nine cores for both arches.
 
 core-debug-fceumm: build/libretro-debug/$(ARCH)/fceumm_libretro.so ## FCEUmm (with debug info) for ARCH.
 core-debug-bsnes: build/libretro-debug/$(ARCH)/bsnes_libretro.so ## bsnes (with debug info) for ARCH.
@@ -320,8 +324,9 @@ core-debug-mgba: build/libretro-debug/$(ARCH)/mgba_libretro.so ## mGBA (with deb
 core-debug-pcsx-rearmed: build/libretro-debug/$(ARCH)/pcsx_rearmed_libretro.so ## pcsx_rearmed (with debug info) for ARCH.
 core-debug-blastem: build/libretro-debug/$(ARCH)/blastem_libretro.so ## BlastEm (with debug info) for ARCH.
 core-debug-picodrive: build/libretro-debug/$(ARCH)/picodrive_libretro.so ## PicoDrive (with debug info) for ARCH.
-cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All eight cores (with debug info) for ARCH.
-cores-debug-all: $(CORE_SO_DEBUG) ## All eight cores for both arches.
+core-debug-genesis-plus-gx: build/libretro-debug/$(ARCH)/genesis_plus_gx_libretro.so ## Genesis Plus GX (with debug info) for ARCH.
+cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All nine cores (with debug info) for ARCH.
+cores-debug-all: $(CORE_SO_DEBUG) ## All nine cores for both arches.
 
 # One original sample ROM per core, compiled from tools/samples.
 $(ROMS_STAMP): $(wildcard tools/samples/*)
