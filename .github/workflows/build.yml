@@ -12,6 +12,8 @@
 # Flow: toolchain (build each image once, fill the layer cache) -> extension and
 # cores (per architecture, in parallel) -> test-godot (headless Godot harness on
 # the stripped x86_64 cores) -> package -> publish (tags only).
+# Extension and cores restore a per-arch ccache (actions/cache), so tag
+# builds after the first only compile the sources that changed.
 name: build
 
 on:
@@ -112,6 +114,13 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
           load: true
           cache-from: type=gha,scope=toolchain-${{ matrix.arch }}
+      - name: Restore the per-arch ccache
+        id: ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.arch }}-v1
+          restore-keys: ccache-${{ matrix.arch }}
       - name: Build the extension (debug and release)
         run: |
           docker run --rm --platform "$PLATFORM" --network none \
@@ -119,6 +128,12 @@ jobs:
             -v "$PWD":/work -w /work \
             "$IMAGE:$IMAGE_TAG-$ARCH" \
             make IN_CONTAINER=1 extension-variants ARCH="$ARCH"
+      - name: Save the per-arch ccache
+        if: steps.ccache.outputs.cache-hit == 'false'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.arch }}-v1
       - name: Check the artifact architecture
         run: |
           mapfile -d '' sos < <(find build/godot_libretro -name '*.so' -print0)
@@ -175,6 +190,13 @@ jobs:
       # The Makefile builds what each check needs: the release core, its
       # stripped copy, the probe and the sample ROMs for check-stripped; the
       # debug core for check-debug.
+      - name: Restore the per-arch ccache
+        id: ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.arch }}-v1
+          restore-keys: ccache-${{ matrix.arch }}
       - name: Build, strip and verify the core
         run: |
           docker run --rm --platform "$PLATFORM" --network none \
@@ -189,6 +211,12 @@ jobs:
             -v "$PWD":/work -w /work \
             "$IMAGE:$IMAGE_TAG-$ARCH" \
             make IN_CONTAINER=1 check-debug ARCH="$ARCH" CHECK_CORES="$CORE"
+      - name: Save the per-arch ccache
+        if: steps.ccache.outputs.cache-hit == 'false'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.arch }}-v1
       - name: Check the artifact architecture
         run: |
           mapfile -d '' sos < <(find build/libretro build/libretro-debug build/dist -name '*.so' -print0)
