@@ -114,7 +114,7 @@ package_run = $(call run_in,$(HOST_ARCH))
 # upstream build. The license file staged in the zips is the first of
 # CORE_LICENSE_CANDIDATES present in the pinned tree (none: packaging fails).
 # Every core zip also stages SOURCE, naming the pinned tree it was built from.
-CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba pcsx_rearmed blastem picodrive genesis_plus_gx
+CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba pcsx_rearmed picodrive genesis_plus_gx
 CORE_SOS := $(addsuffix _libretro.so,$(CORE_IDS))
 CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
 
@@ -124,7 +124,6 @@ core_dir_mupen64plus_next := libretro-mupen64plus-nx
 core_dir_gambatte := libretro-gambatte
 core_dir_mgba := libretro-mgba
 core_dir_pcsx_rearmed := libretro-pcsx_rearmed
-core_dir_blastem := libretro-blastem
 core_dir_picodrive := libretro-picodrive
 core_dir_genesis_plus_gx := libretro-genesis_plus_gx
 
@@ -134,7 +133,6 @@ core_rom_mupen64plus_next := sample.z64
 core_rom_gambatte := sample.gbc
 core_rom_mgba := sample.gba
 core_rom_pcsx_rearmed := sample.exe
-core_rom_blastem := sample.bin
 core_rom_picodrive := sample.bin
 core_rom_genesis_plus_gx := sample.bin
 
@@ -145,7 +143,6 @@ core_make_args_bsnes := -f Makefile platform=unix
 core_make_args_mupen64plus_next = -f Makefile platform=unix ARCH=$(uname_$(1)) HAVE_THR_AL=1 HAVE_PARALLEL_RSP=1 HAVE_PARALLEL_RDP=1 LLE=1
 core_make_args_gambatte := -f Makefile.libretro platform=unix
 core_make_args_pcsx_rearmed := -f Makefile.libretro platform=unix
-core_make_args_blastem := -f Makefile.libretro platform=unix
 core_make_args_picodrive := -f Makefile.libretro platform=unix
 core_make_args_genesis_plus_gx := -f Makefile.libretro platform=unix
 
@@ -154,7 +151,7 @@ core_make_args_genesis_plus_gx := -f Makefile.libretro platform=unix
 # the host Vulkan device) and gambatte rejects the ROM (it needs GET_CAN_DUPE),
 # both of which the Godot harness does provide. So those two are verified
 # through --symbols only, and through the extension in check-stripped-godot.
-BOOT_CORES := fceumm bsnes mgba pcsx_rearmed blastem picodrive genesis_plus_gx
+BOOT_CORES := fceumm bsnes mgba pcsx_rearmed picodrive genesis_plus_gx
 
 # CHECK_CORES narrows the gate to the cores this invocation actually built: CI
 # compiles one core per job, so a job must not demand that the other four exist.
@@ -200,8 +197,8 @@ TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
 	submodules toolchain-image toolchain-images $(TOOLCHAIN_TARGETS) \
 	check-image-arch $(CHECK_IMAGE_TARGETS) \
 	extension extension-variants extension-all \
-	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba core-pcsx-rearmed core-blastem core-picodrive core-genesis-plus-gx \
-	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba core-debug-pcsx-rearmed core-debug-blastem core-debug-picodrive core-debug-genesis-plus-gx \
+	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba core-pcsx-rearmed core-picodrive core-genesis-plus-gx \
+	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba core-debug-pcsx-rearmed core-debug-picodrive core-debug-genesis-plus-gx \
 	cores cores-all cores-debug cores-debug-all roms \
 	test-probe test-godot \
 	check-stripped check-stripped-all check-stripped-godot check-debug check-debug-all \
@@ -310,11 +307,10 @@ core-mupen64plus-next: build/libretro/$(ARCH)/mupen64plus_next_libretro.so ## Mu
 core-gambatte: build/libretro/$(ARCH)/gambatte_libretro.so ## Gambatte for ARCH.
 core-mgba: build/libretro/$(ARCH)/mgba_libretro.so ## mGBA for ARCH.
 core-pcsx-rearmed: build/libretro/$(ARCH)/pcsx_rearmed_libretro.so ## pcsx_rearmed for ARCH.
-core-blastem: build/libretro/$(ARCH)/blastem_libretro.so ## BlastEm for ARCH.
 core-picodrive: build/libretro/$(ARCH)/picodrive_libretro.so ## PicoDrive for ARCH.
 core-genesis-plus-gx: build/libretro/$(ARCH)/genesis_plus_gx_libretro.so ## Genesis Plus GX for ARCH.
-cores: $(foreach c,$(CORE_IDS),build/libretro/$(ARCH)/$(c)_libretro.so) ## All nine cores for ARCH.
-cores-all: $(CORE_SO_RELEASE) ## All nine cores for both arches.
+cores: $(foreach c,$(CORE_IDS),build/libretro/$(ARCH)/$(c)_libretro.so) ## All cores for ARCH.
+cores-all: $(CORE_SO_RELEASE) ## All cores for both arches.
 
 core-debug-fceumm: build/libretro-debug/$(ARCH)/fceumm_libretro.so ## FCEUmm (with debug info) for ARCH.
 core-debug-bsnes: build/libretro-debug/$(ARCH)/bsnes_libretro.so ## bsnes (with debug info) for ARCH.
@@ -322,11 +318,10 @@ core-debug-mupen64plus-next: build/libretro-debug/$(ARCH)/mupen64plus_next_libre
 core-debug-gambatte: build/libretro-debug/$(ARCH)/gambatte_libretro.so ## Gambatte (with debug info) for ARCH.
 core-debug-mgba: build/libretro-debug/$(ARCH)/mgba_libretro.so ## mGBA (with debug info) for ARCH.
 core-debug-pcsx-rearmed: build/libretro-debug/$(ARCH)/pcsx_rearmed_libretro.so ## pcsx_rearmed (with debug info) for ARCH.
-core-debug-blastem: build/libretro-debug/$(ARCH)/blastem_libretro.so ## BlastEm (with debug info) for ARCH.
 core-debug-picodrive: build/libretro-debug/$(ARCH)/picodrive_libretro.so ## PicoDrive (with debug info) for ARCH.
 core-debug-genesis-plus-gx: build/libretro-debug/$(ARCH)/genesis_plus_gx_libretro.so ## Genesis Plus GX (with debug info) for ARCH.
-cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All nine cores (with debug info) for ARCH.
-cores-debug-all: $(CORE_SO_DEBUG) ## All nine cores for both arches.
+cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All cores (with debug info) for ARCH.
+cores-debug-all: $(CORE_SO_DEBUG) ## All cores for both arches.
 
 # One original sample ROM per core, compiled from tools/samples.
 $(ROMS_STAMP): $(wildcard tools/samples/*)
@@ -435,9 +430,9 @@ build/licenses/%/LICENSE: FORCE | submodules
 	echo "No license file among $(CORE_LICENSE_CANDIDATES) in $$src" >&2; exit 1
 
 # The corresponding source of a core, staged as SOURCE: which tree this binary
-# was built from and where to get it. Every core is GPL or MPL (five are
-# GPLv2, BlastEm is GPLv3, mGBA is MPL-2.0), all of which require the source
-# to be conveyed with the binary; a URL plus the exact commit names it
+# was built from and where to get it. The copyleft cores (GPL, MPL)
+# require the source to be conveyed with the binary, and the others get
+# the same treatment for uniformity; a URL plus the exact commit names it
 # unambiguously. Both values are
 # read from this repository (the URL from .gitmodules, the commit from the
 # gitlink), so the file cannot drift from what a cloner gets. The pinned tree

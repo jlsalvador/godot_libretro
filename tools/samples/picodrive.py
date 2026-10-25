@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BlastEm sample ROM (64 KiB cartridge image with battery-backed save RAM).
+"""PicoDrive sample ROM (64 KiB cartridge image with battery-backed save RAM).
 
 Behaviour (same as the other sample ROMs):
 
@@ -467,8 +467,8 @@ def build() -> bytes:
     rom[0x100:0x104] = struct.pack(">I", SYMBOLS["BOOT_SIGNATURE"])   # boot-check signature
     rom[0x104:0x110] = b" " * 12
     field(0x110, "(C)TEST 2026.OCT", 16)
-    field(0x120, "BLASTEM SAMPLE ROM", 48)                    # domestic name
-    field(0x150, "BLASTEM SAMPLE ROM", 48)                    # overseas name
+    field(0x120, "PICODRIVE SAMPLE ROM", 48)                    # domestic name
+    field(0x150, "PICODRIVE SAMPLE ROM", 48)                    # overseas name
     field(0x180, "GM 00000000-00", 14)                        # type and serial
     field(0x190, "J", 16)                                     # supported devices: 3-button pad
     struct.pack_into(">II", rom, 0x1A0, 0x00000000, ROM_SIZE - 1)        # ROM range
@@ -490,7 +490,7 @@ def build() -> bytes:
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "blastem_sample.bin"
+    out = sys.argv[1] if len(sys.argv) > 1 else "picodrive_sample.bin"
     with open(out, "wb") as f:
         f.write(build())
     print(f"wrote {out}")

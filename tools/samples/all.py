@@ -3,7 +3,7 @@
 
 Every sample is an original test pattern (no game content): a minimal
 program for each system that boots in the matching Libretro core. Each
-core gets exactly one ROM, named `sample.<extension>` (the blastem, picodrive and genesis_plus_gx cores share `sample.bin`).
+core gets exactly one ROM, named `sample.<extension>` (the picodrive and genesis_plus_gx cores share `sample.bin`).
 
 The per-system byte-level builders live next to this script, one
 module per core, and are deliberately isolated so iterating on one system
@@ -20,13 +20,13 @@ from pathlib import Path
 # directory on sys.path so `import fceumm` etc. resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import blastem
 import bsnes
 import fceumm
 import gambatte
 import mgba
 import mupen64plus_next
 import pcsx_rearmed
+import picodrive
 
 
 BUILDERS = {
@@ -36,7 +36,7 @@ BUILDERS = {
 	"sample.gbc": gambatte.build,
 	"sample.gba": mgba.build,
 	"sample.exe": pcsx_rearmed.build,
-	"sample.bin": blastem.build,
+	"sample.bin": picodrive.build,
 }
 
 

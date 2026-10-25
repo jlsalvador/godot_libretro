@@ -159,7 +159,7 @@ jobs:
       fail-fast: false
       matrix:
         # Core ids as the Makefile spells them (CHECK_CORES).
-        core: [fceumm, bsnes, mupen64plus_next, gambatte, mgba, pcsx_rearmed, blastem, picodrive, genesis_plus_gx]
+        core: [fceumm, bsnes, mupen64plus_next, gambatte, mgba, pcsx_rearmed, picodrive, genesis_plus_gx]
         arch: [x86_64, arm64]
     runs-on: ${{ matrix.arch == 'arm64' && vars.ARM_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 240

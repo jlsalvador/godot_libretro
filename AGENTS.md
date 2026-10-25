@@ -16,3 +16,8 @@
   from them under `build/` or `dist/`.
 - Commit messages use 50/72 formatting: first line 50 characters or
   less, a blank line, then the body wrapped at 72 characters.
+- Avoid enumeration phrases (counting cores or tallying licenses,
+  e.g. "all eight", "the seven cores", "five are GPLv2"): they
+  duplicate the table or list that already says it, go stale, and
+  must be re-synced on every change. Prefer describing without
+  counting.
