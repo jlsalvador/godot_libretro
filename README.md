@@ -42,7 +42,7 @@ This project ships precompiled Linux artifacts:
 | Mupen64Plus-Next | `mupen64plus_next_libretro.so` | `third_party/libretro-mupen64plus-nx/LICENSE` |
 | Gambatte | `gambatte_libretro.so` | `third_party/libretro-gambatte/COPYING` |
 | mGBA | `mgba_libretro.so` | `third_party/libretro-mgba/LICENSE` |
-| pcsx_rearmed | `pcsx_rearmed_libretro.so` | `third_party/libretro-pcsx_rearmed/COPYING` |
+| PCSX ReARMed | `pcsx_rearmed_libretro.so` | `third_party/libretro-pcsx_rearmed/COPYING` |
 | PicoDrive | `picodrive_libretro.so` | `third_party/libretro-picodrive/COPYING` |
 | Genesis Plus GX | `genesis_plus_gx_libretro.so` | `third_party/libretro-genesis_plus_gx/LICENSE.txt` |
 | godot-cpp (linked) | `libgodot_libretro.so` | `third_party/godot-cpp/LICENSE.md` |
@@ -58,7 +58,7 @@ trees are built unmodified.
 
 ## BIOS files
 
-`pcsx_rearmed` looks for its BIOS files (`scph5500.bin`, `scph5501.bin`,
+PCSX ReARMed looks for its BIOS files (`scph5500.bin`, `scph5501.bin`,
 `scph5502.bin`) in the session's system directory, which defaults to
 `<user data dir>/system/<core id>` and can be pointed elsewhere with
 `set_system_directory()`. The files are not shipped; without them the core
