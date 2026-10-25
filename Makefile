@@ -232,16 +232,20 @@ $(CHECK_IMAGE_TARGETS): check-image-%:
 
 check-image-arch: check-image-$(ARCH) ## Check that the toolchain image for ARCH runs the expected architecture.
 
-# The top level stays single, because the nested gitlink of the
-# Mupen64Plus-Next core tree is intentionally left uninitialized; the
-# PicoDrive core declares nested submodules of its own and gets a
-# recursion scoped to its directory.
+# The top level stays single: the Mupen64Plus-Next tree carries a nested
+# gitlink (mupen64plus-rsp-paraLLEl/lightning/gnulib) that is intentionally
+# left uninitialized, and the PicoDrive core declares nested submodules of
+# its own and gets a recursion scoped to its directory. The nested
+# gitlink has no entry in the tree's .gitmodules, so `git submodule
+# foreach --recursive` aborts on it; the index-only removal below keeps the
+# recursive walk clean without touching the pinned commit or the worktree.
 submodules: ## Initialize submodules (no-op inside a container).
 ifeq ($(IN_CONTAINER),1)
 	@:
 else
 	git -C $(ROOTDIR) submodule update --init
 	git -C $(ROOTDIR)/third_party/libretro-picodrive submodule update --init --recursive
+	git -C $(ROOTDIR)/third_party/libretro-mupen64plus-nx rm -q --cached --ignore-unmatch mupen64plus-rsp-paraLLEl/lightning/gnulib
 endif
 
 # --- GDExtension: stem is <arch>/<variant>, variant debug or release.
