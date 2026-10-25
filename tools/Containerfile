@@ -22,13 +22,15 @@ RUN apt-get update && \
 	&& rm -rf /var/lib/apt/lists/*
 # Transparent ccache: scons and CMake resolve the compiler to an absolute
 # path and SCons rebuilds its child environment, so the /usr/bin driver
-# names become scripts that default CCACHE_DIR and invoke ccache with the
-# resolved compiler binary; the alternatives symlinks are replaced, the
-# real versioned binaries stay put.
+# names become scripts that default CCACHE_DIR and HOME (ccache resolves
+# the home directory at startup even with CCACHE_DIR set, and the
+# container's numeric user has no passwd entry) and invoke ccache with
+# the resolved compiler binary; the alternatives symlinks are replaced,
+# the real versioned binaries stay put.
 RUN for name in cc gcc g++ c++; do \
 		real=$(readlink -f /usr/bin/$name) && \
 		rm /usr/bin/$name && \
-		printf '#!/bin/sh\nexport CCACHE_DIR="${CCACHE_DIR:-/work/.ccache}"\nexec /usr/bin/ccache %s "$@"\n' "$real" > /usr/bin/$name && \
+		printf '#!/bin/sh\nexport CCACHE_DIR="${CCACHE_DIR:-/work/.ccache}"\nexport HOME="${HOME:-/root}"\nexec /usr/bin/ccache %s "$@"\n' "$real" > /usr/bin/$name && \
 		chmod +x /usr/bin/$name; \
 	done
 # One directory per architecture image; make clean wipes build/, so the
