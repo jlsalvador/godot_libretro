@@ -25,3 +25,6 @@
 [submodule "third_party/libretro-blastem"]
 	path = third_party/libretro-blastem
 	url = https://github.com/libretro/blastem.git
+[submodule "third_party/libretro-picodrive"]
+	path = third_party/libretro-picodrive
+	url = https://github.com/libretro/PicoDrive.git

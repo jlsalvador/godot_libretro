@@ -9,6 +9,7 @@ const CORES := {
 	"mgba": "res://build/libretro/%s/mgba_libretro.so",
 	"pcsx_rearmed": "res://build/libretro/%s/pcsx_rearmed_libretro.so",
 	"blastem": "res://build/libretro/%s/blastem_libretro.so",
+	"picodrive": "res://build/libretro/%s/picodrive_libretro.so",
 }
 
 
@@ -20,6 +21,7 @@ const SAMPLE_ROMS := {
 	"mgba": "res://roms/sample.gba",
 	"pcsx_rearmed": "res://roms/sample.exe",
 	"blastem": "res://roms/sample.bin",
+	"picodrive": "res://roms/sample.bin",
 }
 
 
@@ -31,6 +33,7 @@ const EXPECTED_NAMES := {
 	"mgba": "mGBA",
 	"pcsx_rearmed": "PCSX-ReARMed",
 	"blastem": "BlastEm",
+	"picodrive": "PicoDrive",
 }
 
 
@@ -42,6 +45,7 @@ const EXPECTED_EXTENSIONS := {
 	"mgba": ["gba"],
 	"pcsx_rearmed": ["exe"],
 	"blastem": ["md", "gen", "bin"],
+	"picodrive": ["md", "bin"],
 }
 
 

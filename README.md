@@ -44,13 +44,14 @@ This project ships precompiled Linux artifacts:
 | mGBA | `mgba_libretro.so` | `third_party/libretro-mgba/LICENSE` |
 | pcsx_rearmed | `pcsx_rearmed_libretro.so` | `third_party/libretro-pcsx_rearmed/COPYING` |
 | BlastEm | `blastem_libretro.so` | `third_party/libretro-blastem/COPYING` |
+| PicoDrive | `picodrive_libretro.so` | `third_party/libretro-picodrive/COPYING` |
 | godot-cpp (linked) | `libgodot_libretro.so` | `third_party/godot-cpp/LICENSE.md` |
 
 The cores are separate works loaded at runtime through the Libretro C API;
 the extension never links them, so their licenses stay inside their own
 binaries. `libretro.h` (API header only, no code linked) is taken from
 our pinned `third_party/libretro-common` submodule.
-Five of the seven cores are GPLv2, BlastEm is GPLv3, and mGBA is MPL-2.0; each core zip's
+Five of the eight cores are GPLv2, BlastEm is GPLv3, mGBA is MPL-2.0, and PicoDrive is under a custom license; each core zip's
 SOURCE file names the upstream repository and the exact pinned commit, so
 the complete corresponding source of every binary is available there; the
 trees are built unmodified.
