@@ -282,7 +282,10 @@ core_tree = $(mode_src_$(3))/$(2)/$(core_dir_$(1))
 # architecture, so no configuration can survive an architecture switch.
 cmake_dir = $(mode_cmake_$(3))/$(2)/mgba
 core_built = $(if $(filter mgba,$(1)),$(call cmake_dir,$(1),$(2),$(3))/mgba_libretro.so,$(call core_tree,$(1),$(2),$(3))/$(1)_libretro.so)
-core_compile = $(if $(filter mgba,$(1)),cmake -S $(call core_tree,$(1),$(2),$(3)) -B $(call cmake_dir,$(1),$(2),$(3)) -DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_TEST=OFF -DBUILD_SUITE=OFF -DBUILD_PERF=OFF -DBUILD_PYTHON=OFF -DBUILD_DOCGEN=OFF -DCMAKE_BUILD_TYPE=$(mode_cmake_type_$(3)) && cmake --build $(call cmake_dir,$(1),$(2),$(3)) --target mgba_libretro -j$(JOBS),make -C $(call core_tree,$(1),$(2),$(3)) $(call core_make_args_$(1),$(2)) $(mode_flags_$(3)) -j$(JOBS))
+# The inner make must start clean: MAKEFLAGS would carry this Makefile's
+# --no-builtin-rules into the pinned tree, where PicoDrive's x86 build
+# needs its .S suffix rule for the assembly objects.
+core_compile = $(if $(filter mgba,$(1)),cmake -S $(call core_tree,$(1),$(2),$(3)) -B $(call cmake_dir,$(1),$(2),$(3)) -DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_TEST=OFF -DBUILD_SUITE=OFF -DBUILD_PERF=OFF -DBUILD_PYTHON=OFF -DBUILD_DOCGEN=OFF -DCMAKE_BUILD_TYPE=$(mode_cmake_type_$(3)) && cmake --build $(call cmake_dir,$(1),$(2),$(3)) --target mgba_libretro -j$(JOBS),MAKEFLAGS= make -C $(call core_tree,$(1),$(2),$(3)) $(call core_make_args_$(1),$(2)) $(mode_flags_$(3)) -j$(JOBS))
 # The output is replaced only when its content changed, which keeps its mtime
 # (and everything built from it) stable across no-op builds.
 core_build = $(call core_compile,$(1),$(2),$(3)) && mkdir -p $(@D) && { cmp -s $(call core_built,$(1),$(2),$(3)) $@ || cp $(call core_built,$(1),$(2),$(3)) $@; }
