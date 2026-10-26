@@ -10,6 +10,7 @@ const CORES := {
 	"pcsx_rearmed": "res://build/libretro/%s/pcsx_rearmed_libretro.so",
 	"picodrive": "res://build/libretro/%s/picodrive_libretro.so",
 	"genesis_plus_gx": "res://build/libretro/%s/genesis_plus_gx_libretro.so",
+	"ffmpeg": "res://build/libretro/%s/ffmpeg_libretro.so",
 }
 
 
@@ -22,6 +23,7 @@ const SAMPLE_ROMS := {
 	"pcsx_rearmed": "res://roms/sample.exe",
 	"picodrive": "res://roms/sample.bin",
 	"genesis_plus_gx": "res://roms/sample.bin",
+	"ffmpeg": "res://roms/sample.mkv",
 }
 
 
@@ -34,6 +36,7 @@ const EXPECTED_NAMES := {
 	"pcsx_rearmed": "PCSX-ReARMed",
 	"picodrive": "PicoDrive",
 	"genesis_plus_gx": "Genesis Plus GX",
+	"ffmpeg": "FFmpeg",
 }
 
 
@@ -46,6 +49,7 @@ const EXPECTED_EXTENSIONS := {
 	"pcsx_rearmed": ["exe"],
 	"picodrive": ["md", "bin"],
 	"genesis_plus_gx": ["md", "bin"],
+	"ffmpeg": ["mkv"],
 }
 
 
@@ -100,26 +104,28 @@ func _run_test() -> void:
 		print("%s: %s %s, %s, sample game 120 frames: video=%d audio=%d in %.0f ms" % [
 			core_id, core_name, session.get_core_version(), extensions,
 			video_frames, audio_frames, elapsed_ms])
-		if video_frames < 120:
-			failures.append("%s: expected 120 video frames from the sample game, got %d" % [core_id, video_frames])
-		# The sample ROM keeps a battery-backed save: after the run the
-		# session must have written <save dir>/<core file>/sample.srm with
-		# written data (the save is flushed when the session stops).
+		if video_frames < 120 and audio_frames < 120:
+			failures.append("%s: expected 120 frames from the sample game, got %d video, %d audio" % [core_id, video_frames, audio_frames])
+		# The sample ROMs keep a battery-backed save in every core but the
+		# FFmpeg one (it exposes no save RAM): after the run the session
+		# must have written <save dir>/<core file>/sample.srm with written
+		# data (the save is flushed when the session stops).
 		session.stop()
-		var save_path := ProjectSettings.globalize_path("res://build/core_info_saves").path_join(core_path.get_file().get_basename() + "/sample.srm")
-		var save_file := FileAccess.open(save_path, FileAccess.READ)
-		if save_file == null:
-			failures.append("%s: no save file at %s" % [core_id, save_path])
-		else:
-			var save_data := save_file.get_buffer(save_file.get_length())
-			save_file.close()
-			var wrote_data := false
-			for save_byte in save_data:
-				if save_byte != 0:
-					wrote_data = true
-					break
-			if not wrote_data:
-				failures.append("%s: save file has no written data" % core_id)
+		if core_id != "ffmpeg":
+			var save_path := ProjectSettings.globalize_path("res://build/core_info_saves").path_join(core_path.get_file().get_basename() + "/sample.srm")
+			var save_file := FileAccess.open(save_path, FileAccess.READ)
+			if save_file == null:
+				failures.append("%s: no save file at %s" % [core_id, save_path])
+			else:
+				var save_data := save_file.get_buffer(save_file.get_length())
+				save_file.close()
+				var wrote_data := false
+				for save_byte in save_data:
+					if save_byte != 0:
+						wrote_data = true
+						break
+				if not wrote_data:
+					failures.append("%s: save file has no written data" % core_id)
 	# BIOS lookup: the core must find a BIOS file in the session's system
 	# directory and report it through its log interface. The fixture is a
 	# 512 KiB file with the core's BIOS signature (00 08 3c 3f at offset 1);

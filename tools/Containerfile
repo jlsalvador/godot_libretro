@@ -11,9 +11,15 @@ RUN apt-get update && \
 		cmake \
 		ccache \
 		git \
+		libavcodec-dev \
+		libavformat-dev \
+		libavutil-dev \
 		libgl-dev \
+		libswresample-dev \
+		libswscale-dev \
 		libvulkan-dev \
 		nasm \
+		pkg-config \
 		python3 \
 		scons \
 		xz-utils \

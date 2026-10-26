@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Compile the per-core sample ROMs shipped with each release zip.
 
-Every sample is an original test pattern (no game content): a minimal
-program for each system that boots in the matching Libretro core. Each
-core gets exactly one ROM, named `sample.<extension>` (the picodrive and genesis_plus_gx cores share `sample.bin`).
+Every sample is original test content (no game content): a minimal
+program for each system that boots in the matching Libretro core, and
+for the video player (ffmpeg) a short clip that plays in it. Each core
+gets exactly one sample, named `sample.<extension>` (the picodrive and
+genesis_plus_gx cores share `sample.bin`).
 
 The per-system byte-level builders live next to this script, one
 module per core, and are deliberately isolated so iterating on one system
@@ -21,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bsnes
+import ffmpeg
 import fceumm
 import gambatte
 import mgba
@@ -37,6 +40,7 @@ BUILDERS = {
 	"sample.gba": mgba.build,
 	"sample.exe": pcsx_rearmed.build,
 	"sample.bin": picodrive.build,
+	"sample.mkv": ffmpeg.build,
 }
 
 

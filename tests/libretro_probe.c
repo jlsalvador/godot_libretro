@@ -161,5 +161,8 @@ int main(int argc, char **argv) {
 	retro_deinit();
 	free(rom_data);
 	dlclose(handle);
-	return video_frames >= 120 ? 0 : 1;
+	/* A video core feeds one video frame per retro_run; the video/music
+	 * player feeds audio instead. Pass if either keeps flowing over the
+	 * 120 runs, so a stalled core (neither) still fails. */
+	return (video_frames >= 120 || audio_frames >= 120) ? 0 : 1;
 }

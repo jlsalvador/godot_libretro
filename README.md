@@ -14,7 +14,8 @@ This project ships precompiled Linux artifacts:
   architecture, containing the core `.so`, its `LICENSE` (the license file
   of its pinned submodule tree), a `SOURCE` file naming the upstream
   repository and the exact commit it was built from, and the original
-  sample ROM that core boots.
+  sample ROM that the core boots (a short generated clip for the video
+  player).
 
 ## Layout
 
@@ -45,6 +46,7 @@ This project ships precompiled Linux artifacts:
 | PCSX ReARMed | `pcsx_rearmed_libretro.so` | `third_party/libretro-pcsx_rearmed/COPYING` |
 | PicoDrive | `picodrive_libretro.so` | `third_party/libretro-picodrive/COPYING` |
 | Genesis Plus GX | `genesis_plus_gx_libretro.so` | `third_party/libretro-genesis_plus_gx/LICENSE.txt` |
+| FFmpeg | `ffmpeg_libretro.so` | `third_party/RetroArch/COPYING` |
 | godot-cpp (linked) | `libgodot_libretro.so` | `third_party/godot-cpp/LICENSE.md` |
 
 The cores are separate works loaded at runtime through the Libretro C API;
@@ -54,7 +56,12 @@ our pinned `third_party/libretro-common` submodule.
 Each core zip's
 SOURCE file names the upstream repository and the exact pinned commit, so
 the complete corresponding source of every binary is available there; the
-trees are built unmodified.
+trees are built unmodified. The FFmpeg core is the video player in the
+pinned RetroArch tree: its binary statically links the pinned FFmpeg tree
+(LGPL-2.1), built once per architecture, so it stays self-contained like
+the other cores; its SOURCE file names both trees, and its sample is a
+generated clip (320x240, one colour per second, plus an 8 kHz white-noise
+track) that the core plays instead of a ROM.
 
 ## BIOS files
 

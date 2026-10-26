@@ -114,7 +114,7 @@ package_run = $(call run_in,$(HOST_ARCH))
 # upstream build. The license file staged in the zips is the first of
 # CORE_LICENSE_CANDIDATES present in the pinned tree (none: packaging fails).
 # Every core zip also stages SOURCE, naming the pinned tree it was built from.
-CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba pcsx_rearmed picodrive genesis_plus_gx
+CORE_IDS := fceumm bsnes mupen64plus_next gambatte mgba pcsx_rearmed picodrive genesis_plus_gx ffmpeg
 CORE_SOS := $(addsuffix _libretro.so,$(CORE_IDS))
 CORE_LICENSE_CANDIDATES := LICENSE LICENSE.txt COPYING Copying
 
@@ -126,6 +126,7 @@ core_dir_mgba := libretro-mgba
 core_dir_pcsx_rearmed := libretro-pcsx_rearmed
 core_dir_picodrive := libretro-picodrive
 core_dir_genesis_plus_gx := libretro-genesis_plus_gx
+core_dir_ffmpeg := RetroArch
 
 core_rom_fceumm := sample.nes
 core_rom_bsnes := sample.sfc
@@ -135,6 +136,7 @@ core_rom_mgba := sample.gba
 core_rom_pcsx_rearmed := sample.exe
 core_rom_picodrive := sample.bin
 core_rom_genesis_plus_gx := sample.bin
+core_rom_ffmpeg := sample.mkv
 
 core_make_args_fceumm := -f Makefile.libretro platform=unix
 core_make_args_bsnes := -f Makefile platform=unix
@@ -151,8 +153,7 @@ core_make_args_genesis_plus_gx := -f Makefile.libretro platform=unix
 # the host Vulkan device) and gambatte rejects the ROM (it needs GET_CAN_DUPE),
 # both of which the Godot harness does provide. So those two are verified
 # through --symbols only, and through the extension in check-stripped-godot.
-BOOT_CORES := fceumm bsnes mgba pcsx_rearmed picodrive genesis_plus_gx
-
+BOOT_CORES := fceumm bsnes mgba pcsx_rearmed picodrive genesis_plus_gx ffmpeg
 # CHECK_CORES narrows the gate to the cores this invocation actually built: CI
 # compiles one core per job, so a job must not demand that the other four exist.
 CHECK_CORES ?= $(CORE_IDS)
@@ -197,8 +198,8 @@ TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
 	submodules toolchain-image toolchain-images $(TOOLCHAIN_TARGETS) \
 	check-image-arch $(CHECK_IMAGE_TARGETS) \
 	extension extension-variants extension-all \
-	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba core-pcsx-rearmed core-picodrive core-genesis-plus-gx \
-	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba core-debug-pcsx-rearmed core-debug-picodrive core-debug-genesis-plus-gx \
+	core-fceumm core-bsnes core-mupen64plus-next core-gambatte core-mgba core-pcsx-rearmed core-picodrive core-genesis-plus-gx core-ffmpeg \
+	core-debug-fceumm core-debug-bsnes core-debug-mupen64plus-next core-debug-gambatte core-debug-mgba core-debug-pcsx-rearmed core-debug-picodrive core-debug-genesis-plus-gx core-debug-ffmpeg \
 	cores cores-all cores-debug cores-debug-all roms \
 	test-probe test-godot \
 	check-stripped check-stripped-all check-stripped-godot check-debug check-debug-all \
@@ -280,22 +281,51 @@ seed_core = src=third_party/$(core_dir_$(1)); dst=$(mode_src_$(2))/$(3)/$(core_d
 		echo "$$commit" > "$$dst/.pinned-commit"; \
 	fi
 
+# The FFmpeg core is the video player in the pinned RetroArch tree: its own
+# build (make -C cores/libretro-ffmpeg) links the pinned FFmpeg tree as
+# static libraries into the core, so the binary stays self-contained.
+# HAVE_SSA=0 drops the libass subtitle path: the harness never feeds
+# subtitles, and keeping it would link a third tree for a feature the
+# sample cannot exercise. The FFmpeg tree is seeded once per architecture,
+# built as static libraries, and shared by the release and debug core
+# builds; the guard is the presence of the libraries.
+ffmpeg_tree = build/ffmpeg/$(1)
+# The container always sees the repository at /work (run_in mounts it there,
+# and CI starts the container around it), so the container-side commands
+# name /work paths, not $(ROOTDIR): the core make runs from the core's own
+# directory, so the libraries must be absolute.
+ffmpeg_libs = /work/build/ffmpeg/$(1)/libavformat/libavformat.a /work/build/ffmpeg/$(1)/libavcodec/libavcodec.a /work/build/ffmpeg/$(1)/libswscale/libswscale.a /work/build/ffmpeg/$(1)/libswresample/libswresample.a /work/build/ffmpeg/$(1)/libavutil/libavutil.a -lz -lm -ldl -lpthread -lGL
+ffmpeg_static_build = (cd $(call ffmpeg_tree,$(1)) && test -f libavutil/libavutil.a || { ./configure --enable-static --disable-shared --enable-pic --disable-doc --disable-ffplay --disable-ffprobe --disable-ffmpeg && make -j$(JOBS); })
+seed_ffmpeg = src=third_party/FFmpeg; dst=$(call ffmpeg_tree,$(1)); \
+	commit=$$(git -C $$src rev-parse HEAD) || exit 1; \
+	if [ ! -f "$$dst/.pinned-commit" ] || [ "$$(cat "$$dst/.pinned-commit")" != "$$commit" ]; then \
+		echo "seeding $$dst from $$src at $$commit"; \
+		rm -rf "$$dst"; mkdir -p "$$(dirname "$$dst")"; cp -a "$$src" "$$dst"; \
+		echo "$$commit" > "$$dst/.pinned-commit"; \
+	fi
+
+# core_sources: every tree the binary was built from goes in its SOURCE
+# file: the core's own tree, plus the FFmpeg tree for the FFmpeg core.
+core_sources_% := $(core_dir_$*)
+core_sources_ffmpeg := RetroArch FFmpeg
+
 # core_tree/cmake_dir/core_built/core_compile/core_build(core, arch, mode)
 core_tree = $(mode_src_$(3))/$(2)/$(core_dir_$(1))
 # The CMake binary directory is outside the source copy and keyed by
 # architecture, so no configuration can survive an architecture switch.
 cmake_dir = $(mode_cmake_$(3))/$(2)/mgba
-core_built = $(if $(filter mgba,$(1)),$(call cmake_dir,$(1),$(2),$(3))/mgba_libretro.so,$(call core_tree,$(1),$(2),$(3))/$(1)_libretro.so)
+core_built = $(if $(filter mgba,$(1)),$(call cmake_dir,$(1),$(2),$(3))/mgba_libretro.so,$(if $(filter ffmpeg,$(1)),$(call core_tree,$(1),$(2),$(3))/cores/libretro-ffmpeg/$(1)_libretro.so,$(call core_tree,$(1),$(2),$(3))/$(1)_libretro.so))
 # The inner make must start clean: MAKEFLAGS would carry this Makefile's
 # --no-builtin-rules into the pinned tree, where PicoDrive's x86 build
 # needs its .S suffix rule for the assembly objects.
-core_compile = $(if $(filter mgba,$(1)),cmake -S $(call core_tree,$(1),$(2),$(3)) -B $(call cmake_dir,$(1),$(2),$(3)) -DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_TEST=OFF -DBUILD_SUITE=OFF -DBUILD_PERF=OFF -DBUILD_PYTHON=OFF -DBUILD_DOCGEN=OFF -DCMAKE_BUILD_TYPE=$(mode_cmake_type_$(3)) && cmake --build $(call cmake_dir,$(1),$(2),$(3)) --target mgba_libretro -j$(JOBS),MAKEFLAGS= make -C $(call core_tree,$(1),$(2),$(3)) $(call core_make_args_$(1),$(2)) $(mode_flags_$(3)) -j$(JOBS))
+core_compile = $(if $(filter mgba,$(1)),cmake -S $(call core_tree,$(1),$(2),$(3)) -B $(call cmake_dir,$(1),$(2),$(3)) -DBUILD_LIBRETRO=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_TEST=OFF -DBUILD_SUITE=OFF -DBUILD_PERF=OFF -DBUILD_PYTHON=OFF -DBUILD_DOCGEN=OFF -DCMAKE_BUILD_TYPE=$(mode_cmake_type_$(3)) && cmake --build $(call cmake_dir,$(1),$(2),$(3)) --target mgba_libretro -j$(JOBS),$(if $(filter ffmpeg,$(1)),MAKEFLAGS= make -C $(call core_tree,$(1),$(2),$(3))/cores/libretro-ffmpeg platform=unix HAVE_SSA=0 LIBS="$(call ffmpeg_libs,$(2))" $(mode_flags_$(3)) -j$(JOBS),MAKEFLAGS= make -C $(call core_tree,$(1),$(2),$(3)) $(call core_make_args_$(1),$(2)) $(mode_flags_$(3)) -j$(JOBS)))
 # The output is replaced only when its content changed, which keeps its mtime
 # (and everything built from it) stable across no-op builds.
-core_build = $(call core_compile,$(1),$(2),$(3)) && mkdir -p $(@D) && { cmp -s $(call core_built,$(1),$(2),$(3)) $@ || cp $(call core_built,$(1),$(2),$(3)) $@; }
+core_build = $(if $(filter ffmpeg,$(1)),$(call ffmpeg_static_build,$(2)) && ,)$(call core_compile,$(1),$(2),$(3)) && mkdir -p $(@D) && { cmp -s $(call core_built,$(1),$(2),$(3)) $@ || cp $(call core_built,$(1),$(2),$(3)) $@; }
 
 define core_recipe
 @$(call seed_core,$(stem_core),$(MODE),$(stem_arch))
+$(if $(filter ffmpeg,$(stem_core)),@$(call seed_ffmpeg,$(stem_arch)))
 $(call run_in,$(stem_arch)) '$(call core_build,$(stem_core),$(stem_arch),$(MODE))'
 endef
 
@@ -316,6 +346,7 @@ core-mgba: build/libretro/$(ARCH)/mgba_libretro.so ## mGBA for ARCH.
 core-pcsx-rearmed: build/libretro/$(ARCH)/pcsx_rearmed_libretro.so ## pcsx_rearmed for ARCH.
 core-picodrive: build/libretro/$(ARCH)/picodrive_libretro.so ## PicoDrive for ARCH.
 core-genesis-plus-gx: build/libretro/$(ARCH)/genesis_plus_gx_libretro.so ## Genesis Plus GX for ARCH.
+core-ffmpeg: build/libretro/$(ARCH)/ffmpeg_libretro.so ## FFmpeg (video player) for ARCH.
 cores: $(foreach c,$(CORE_IDS),build/libretro/$(ARCH)/$(c)_libretro.so) ## All cores for ARCH.
 cores-all: $(CORE_SO_RELEASE) ## All cores for both arches.
 
@@ -327,6 +358,7 @@ core-debug-mgba: build/libretro-debug/$(ARCH)/mgba_libretro.so ## mGBA (with deb
 core-debug-pcsx-rearmed: build/libretro-debug/$(ARCH)/pcsx_rearmed_libretro.so ## pcsx_rearmed (with debug info) for ARCH.
 core-debug-picodrive: build/libretro-debug/$(ARCH)/picodrive_libretro.so ## PicoDrive (with debug info) for ARCH.
 core-debug-genesis-plus-gx: build/libretro-debug/$(ARCH)/genesis_plus_gx_libretro.so ## Genesis Plus GX (with debug info) for ARCH.
+core-debug-ffmpeg: build/libretro-debug/$(ARCH)/ffmpeg_libretro.so ## FFmpeg (with debug info) for ARCH.
 cores-debug: $(foreach c,$(CORE_IDS),build/libretro-debug/$(ARCH)/$(c)_libretro.so) ## All cores (with debug info) for ARCH.
 cores-debug-all: $(CORE_SO_DEBUG) ## All cores for both arches.
 
@@ -449,11 +481,7 @@ build/licenses/%/LICENSE: FORCE | submodules
 # license file, SOURCE is only rewritten when its content changes.
 build/licenses/%/SOURCE: FORCE
 	@mkdir -p $(@D)
-	@dir=third_party/$(core_dir_$*); \
-	name=$$(basename "$$dir"); \
-	url=$$(git config -f .gitmodules --get "submodule.$$dir.url") || exit 1; \
-	sha=$$(git rev-parse "HEAD:$$dir") || exit 1; \
-	{ \
+	@{ \
 		echo "godot_libretro: corresponding source of this core"; \
 		echo "================================================"; \
 		echo; \
@@ -461,28 +489,38 @@ build/licenses/%/SOURCE: FORCE
 		echo "Binary:  $*_libretro.so"; \
 		echo; \
 		echo "License: the LICENSE file in this archive is a verbatim copy of"; \
-		echo "         the license file of the pinned upstream tree below."; \
-		echo; \
-		echo "Upstream repository:"; \
-		echo "    $$url"; \
-		echo; \
-		echo "Pinned commit:"; \
-		echo "    $$sha"; \
-		echo; \
-		echo "The complete corresponding source of this binary is the upstream"; \
-		echo "tree at that commit, used with no source modifications (build"; \
-		echo "arguments only) and built with GCC 12 on Debian 12. To obtain it:"; \
-		echo; \
-		echo "    git clone $$url"; \
-		echo "    cd $$name"; \
-		echo "    git checkout $$sha"; \
-		echo; \
-		echo "The same tree is pinned as a submodule of the project that built this"; \
-		echo "binary; 'git submodule update --init' (or 'make submodules') checks"; \
-		echo "out exactly that commit:"; \
-		echo; \
-		echo "    $$dir"; \
+		echo "         a pinned upstream tree below."; \
 	} > $@.tmp
+	@prev=; \
+	for d in $(core_sources_$*); do \
+		[ -n "$$prev" ] && echo >> $@.tmp; \
+		prev=1; \
+		dir=third_party/$$d; \
+		name=$$(basename "$$dir"); \
+		url=$$(git config -f .gitmodules --get "submodule.$$dir.url") || exit 1; \
+		sha=$$(git rev-parse "HEAD:$$dir") || exit 1; \
+		{ \
+			echo "Upstream repository:"; \
+			echo "    $$url"; \
+			echo; \
+			echo "Pinned commit:"; \
+			echo "    $$sha"; \
+			echo; \
+			echo "The complete corresponding source of this binary is the upstream"; \
+			echo "tree at that commit, used with no source modifications (build"; \
+			echo "arguments only) and built with GCC 12 on Debian 12. To obtain it:"; \
+			echo; \
+			echo "    git clone $$url"; \
+			echo "    cd $$name"; \
+			echo "    git checkout $$sha"; \
+			echo; \
+			echo "The same tree is pinned as a submodule of the project that built this"; \
+			echo "binary; 'git submodule update --init' (or 'make submodules') checks"; \
+			echo "out exactly that commit:"; \
+			echo; \
+			echo "    $$dir"; \
+		} >> $@.tmp; \
+	done
 	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
 
 # Zips, from the matrix above. One zip per core per architecture and variant
