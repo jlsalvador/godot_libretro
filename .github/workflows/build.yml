@@ -9,10 +9,11 @@
 # native arm64 runners instead (free for public repositories), set the
 # repository variable ARM_RUNNER to `ubuntu-24.04-arm`: qemu is then skipped.
 #
-# Flow: toolchain (build each image once, fill the layer cache) -> extension and
-# cores (per architecture, in parallel) -> test-godot (headless Godot harness on
-# the stripped x86_64 cores) -> package -> publish (tags only).
-# Extension and cores restore a per-job ccache (actions/cache/restore) and
+# Flow: toolchain (build each image once, fill the layer cache) -> extension
+# (per architecture, in parallel) -> test-godot (headless Godot harness on
+# the x86_64 extension, against the dummy test core) -> package -> publish
+# (tags only).
+# Extension artifacts restore a per-job ccache (actions/cache/restore) and
 # save it under a per-run key (actions/cache/save); the jobs build disjoint
 # trees, so one key per job per architecture, and tag builds after the first
 # only compile the sources that changed.
@@ -42,22 +43,13 @@ env:
   GODOT_VERSION: 4.7.2-stable
   GODOT_SHA512: 9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65
 
-# Every job that runs the toolchain container does the same three things: set up
-# qemu (arm64 on an amd64 runner only), set up buildx, and load the image from
-# the layer cache that the `toolchain` job filled (a cache miss rebuilds it).
-# The container runs as the runner's own user: the repository is bind-mounted,
-# so files stay owned by the runner and git does not reject the mounted
-# submodules as "dubious ownership". The network is off, as in the local flow.
-#
-# Submodules: the jobs that need them check out with `submodules: false` and
-# then run `make submodules` (a single level, the same command as the local
-# flow). The nested gitlink of the Mupen64Plus-Next core
-# (mupen64plus-rsp-paraLLEl/lightning/gnulib) has no entry in its upstream
-# .gitmodules, so `git submodule foreach --recursive` fails on it with exit
-# code 128, and actions/checkout runs exactly that in its credential cleanup
-# whenever a submodule is populated. Dropping the gitlink from the index of the
-# nested repository avoids it without touching the pinned commit or the
-# worktree.
+# Every job that runs the toolchain container does the same three things: set
+# up qemu (arm64 on an amd64 runner only), set up buildx, and load the image
+# from the layer cache that the `toolchain` job filled (a cache miss rebuilds
+# it). The container runs as the runner's own user: the repository is
+# bind-mounted, so files stay owned by the runner and git does not reject the
+# mounted submodule as "dubious ownership". The network is off, as in the
+# local flow.
 jobs:
   toolchain:
     strategy:
@@ -73,7 +65,7 @@ jobs:
           sparse-checkout: tools
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb9637bfbc97413f49706 # v4.4.1
       - name: Build the toolchain image and fill the cache
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -106,7 +98,7 @@ jobs:
         run: make submodules
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb9637bfbc97413f49706 # v4.4.1
       - name: Load the toolchain image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -134,6 +126,7 @@ jobs:
         with:
           path: .ccache
           key: ccache-${{ matrix.arch }}-v1-extension-r${{ github.run_id }}
+          restore-keys: ccache-${{ matrix.arch }}-v1-extension
       - name: Check the artifact architecture
         run: |
           mapfile -d '' sos < <(find build/godot_libretro -name '*.so' -print0)
@@ -153,100 +146,33 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  cores:
-    needs: toolchain
-    strategy:
-      fail-fast: false
-      matrix:
-        # Core ids as the Makefile spells them (CHECK_CORES).
-        core: [fceumm, bsnes, mupen64plus_next, gambatte, mgba, pcsx_rearmed, picodrive, genesis_plus_gx, ffmpeg]
-        arch: [x86_64, arm64]
-    runs-on: ${{ matrix.arch == 'arm64' && vars.ARM_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 240
+  # The package job skips the Makefile's verification gate (SKIP_VERIFY=1)
+  # because this job runs the Godot harness: it loads the x86_64 extension
+  # against the dummy test core through the real dlmopen path, natively.
+  test-godot:
+    needs: extension
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
-      ARCH: ${{ matrix.arch }}
-      CORE: ${{ matrix.core }}
-      PLATFORM: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
-      ELF_ARCH: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86-64' }}
+      PLATFORM: linux/amd64
+      ARCH: x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: false
           persist-credentials: false
-      - name: Initialize submodules (single level)
-        run: make submodules
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-        if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Load the toolchain image
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb9637bfbc97413f49706 # v4.4.1
+      - name: Load the host toolchain image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: tools
           file: ${{ env.CONTAINERFILE }}
-          platforms: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
+          platforms: ${{ env.PLATFORM }}
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ env.ARCH }}
           load: true
-          cache-from: type=gha,scope=toolchain-${{ matrix.arch }}
-      # The Makefile builds what each check needs: the release core, its
-      # stripped copy, the probe and the sample ROMs for check-stripped; the
-      # debug core for check-debug.
-      - name: Restore the ccache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .ccache
-          key: ccache-${{ matrix.arch }}-v1-${{ matrix.core }}
-          restore-keys: ccache-${{ matrix.arch }}-v1-${{ matrix.core }}
-      - name: Build, strip and verify the core
-        run: |
-          docker run --rm --platform "$PLATFORM" --network none \
-            --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -v "$PWD":/work -w /work \
-            "$IMAGE:$IMAGE_TAG-$ARCH" \
-            make IN_CONTAINER=1 check-stripped ARCH="$ARCH" CHECK_CORES="$CORE"
-      - name: Build and verify the debug core
-        run: |
-          docker run --rm --platform "$PLATFORM" --network none \
-            --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -v "$PWD":/work -w /work \
-            "$IMAGE:$IMAGE_TAG-$ARCH" \
-            make IN_CONTAINER=1 check-debug ARCH="$ARCH" CHECK_CORES="$CORE"
-      - name: Save the ccache
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .ccache
-          key: ccache-${{ matrix.arch }}-v1-${{ matrix.core }}-r${{ github.run_id }}
-      - name: Check the artifact architecture
-        run: |
-          mapfile -d '' sos < <(find build/libretro build/libretro-debug build/dist -name '*.so' -print0)
-          [ "${#sos[@]}" -gt 0 ] || { echo "No .so artifacts in build/libretro, build/libretro-debug or build/dist" >&2; exit 1; }
-          for so in "${sos[@]}"; do
-            file -b "$so" | grep -q "$ELF_ARCH" || { echo "$so is not $ELF_ARCH" >&2; exit 1; }
-          done
-      - name: Pack the artifact
-        run: tar -cf "core-$CORE-$ARCH.tar" build/libretro build/libretro-debug build/dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: core-${{ matrix.core }}-${{ matrix.arch }}
-          path: core-${{ matrix.core }}-${{ matrix.arch }}.tar
-          if-no-files-found: error
-          retention-days: 7
-
-  # The package job skips the Makefile's verification gate (SKIP_VERIFY=1)
-  # because the cores job already ran the per-architecture checks. What only
-  # this job can do is the Godot harness, which loads the stripped cores through
-  # the real extension: it runs here, on the x86_64 binaries, natively.
-  test-godot:
-    needs: [extension, cores]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+          cache-from: type=gha,scope=toolchain-x86_64
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: "*-x86_64"
-          merge-multiple: true
+          name: extension-x86_64
           path: artifacts
       - name: Unpack the artifacts
         run: for t in artifacts/*.tar; do tar -xf "$t"; done
@@ -259,34 +185,38 @@ jobs:
           unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
           chmod +x "$RUNNER_TEMP/godot/${zip%.zip}"
           echo "GODOT=$RUNNER_TEMP/godot/${zip%.zip}" >> "$GITHUB_ENV"
-      # IN_CONTAINER=1: run the recipes in this shell, no podman here.
-      # PREBUILT=1: the extension and the cores come from the artifacts.
-      - name: Run the Godot harness on the stripped cores
-        run: make IN_CONTAINER=1 PREBUILT=1 check-stripped-godot
+      # The dummy core compiles against the pinned libretro.h, so it builds
+      # in the toolchain container; the harness itself runs natively, as in
+      # the local flow. PREBUILT=1: the extension comes from the artifact.
+      - name: Build the dummy test core
+        run: |
+          docker run --rm --network none \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD":/work -w /work \
+            "$IMAGE:$IMAGE_TAG-$ARCH" \
+            make IN_CONTAINER=1 dummy
+      - name: Run the Godot harness against the dummy core
+        run: make IN_CONTAINER=1 PREBUILT=1 test-godot
 
   package:
-    needs: [extension, cores, test-godot]
+    needs: [extension, test-godot]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PLATFORM: linux/amd64
       ARCH: x86_64
     steps:
-      # The submodules are needed for the license files staged in the zips.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: false
           persist-credentials: false
-      - name: Initialize submodules (single level)
-        run: make submodules
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb9637bfbc97413f49706 # v4.4.1
       - name: Load the host toolchain image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: tools
           file: ${{ env.CONTAINERFILE }}
-          platforms: linux/amd64
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-x86_64
+          platforms: ${{ env.PLATFORM }}
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ env.ARCH }}
           load: true
           cache-from: type=gha,scope=toolchain-x86_64
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -296,8 +226,8 @@ jobs:
       - name: Unpack the artifacts
         run: for t in artifacts/*.tar; do tar -xf "$t"; done
       # SKIP_VERIFY=1 also means PREBUILT: the unpacked binaries are used as
-      # they are. The sample ROMs are generated here (deterministic).
-      - name: Package zips
+      # they are.
+      - name: Package the extension zip
         run: |
           docker run --rm --platform "$PLATFORM" --network none \
             --user "$(id -u):$(id -g)" -e HOME=/tmp \
@@ -308,8 +238,7 @@ jobs:
         with:
           name: package
           path: |
-            dist/*.zip
-            dist/manifest.md5
+          path: dist/*.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -332,4 +261,4 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --verify-tag --notes "Precompiled Linux matrix."
-          gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/manifest.md5 --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber

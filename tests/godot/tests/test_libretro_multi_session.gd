@@ -6,15 +6,15 @@ func _initialize() -> void:
 
 
 func _run_test() -> void:
-	var core_path := ProjectSettings.globalize_path("res://build/libretro/%s/fceumm_libretro.so" % Engine.get_architecture_name())
-	var rom_path := ProjectSettings.globalize_path("res://roms/sample.nes")
+	var core_path := ProjectSettings.globalize_path("res://build/libretro/%s/dummy_libretro.so" % Engine.get_architecture_name())
+	var rom_path := ProjectSettings.globalize_path("res://roms/sample.dmy")
 	var session_a := LibretroSession.new()
 	var session_b := LibretroSession.new()
 	session_a.set_save_directory(ProjectSettings.globalize_path("res://build/multi_session_saves/a"))
 	session_b.set_save_directory(ProjectSettings.globalize_path("res://build/multi_session_saves/b"))
 
 	if not session_a.load_core(core_path) or not session_b.load_core(core_path):
-		push_error("Two independent FCEUmm core instances should load concurrently.")
+		push_error("Two independent core instances should load concurrently.")
 		session_a.stop()
 		session_b.stop()
 		quit(1)

@@ -24,7 +24,14 @@ static unsigned audio_frames;
 
 static bool environment_callback(unsigned command, void *data) {
 	(void)data;
-	return command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT;
+	if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT)
+		return true;
+	/* The test dummy asks for frame duping; answer like the Godot harness. */
+	if (command == RETRO_ENVIRONMENT_GET_CAN_DUPE) {
+		*(bool *)data = true;
+		return true;
+	}
+	return false;
 }
 
 static void video_callback(const void *data, unsigned width, unsigned height, size_t pitch) {

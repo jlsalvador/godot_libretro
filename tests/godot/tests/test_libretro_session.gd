@@ -7,10 +7,10 @@ func _initialize() -> void:
 
 func _run_test() -> void:
 	var session := LibretroSession.new()
-	var core_path := ProjectSettings.globalize_path("res://build/libretro/%s/fceumm_libretro.so" % Engine.get_architecture_name())
-	var rom_path := ProjectSettings.globalize_path("res://roms/sample.nes")
+	var core_path := ProjectSettings.globalize_path("res://build/libretro/%s/dummy_libretro.so" % Engine.get_architecture_name())
+	var rom_path := ProjectSettings.globalize_path("res://roms/sample.dmy")
 	var save_directory := ProjectSettings.globalize_path("res://build/libretro_session_saves")
-	var expected_save_path := save_directory.path_join("fceumm_libretro/sample.srm")
+	var expected_save_path := save_directory.path_join("dummy_libretro/%s.srm" % rom_path.get_file().get_basename())
 	session.set_save_directory(save_directory)
 	# The sample ROM counts up in SRAM instead of writing fixed markers, so the
 	# run starts from an empty sidecar to make both sessions' counters mean
@@ -131,8 +131,8 @@ func _run_test() -> void:
 	quit(0)
 
 
-## The FCEUmm sample ROM keeps a 16-bit little-endian counter at $6000,
-## which is the first thing written to the sidecar.
+## The dummy core keeps a counter at the start of its SAVE_RAM, which is
+## the first thing written to the sidecar.
 func _read_save_u16(path: String) -> int:
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null or file.get_length() < 2:

@@ -1,32 +1,22 @@
 FROM debian:12-slim
-
-# Debian 12 (GCC 12) only: newer host toolchains (measured GCC 15)
-# miscompile the Mupen64Plus-Next core into a ~400x slower binary.
+# Debian 12 (GCC 12) only: artifacts come from this pinned image, not from
+# whatever host toolchain is installed (drift changes the binaries), and
+# cross-compiling from the host does not work for this stack (godot-cpp's
+# SConstruct appends -march=armv8-a for arm64 to the host compiler).
 # One image per architecture (linux/amd64 and linux/arm64): each build
 # runs natively inside the image of its own arch, so this image carries
 # no cross toolchain and no foreign-arch packages.
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
 		build-essential \
-		cmake \
 		ccache \
 		git \
-		libavcodec-dev \
-		libavformat-dev \
-		libavutil-dev \
-		libgl-dev \
-		libswresample-dev \
-		libswscale-dev \
 		libvulkan-dev \
-		nasm \
 		pkg-config \
-		python3 \
 		scons \
-		xz-utils \
 		zip \
-		zlib1g-dev \
 	&& rm -rf /var/lib/apt/lists/*
-# Transparent ccache: scons and CMake resolve the compiler to an absolute
+# Transparent ccache: scons resolves the compiler to an absolute
 # path and SCons rebuilds its child environment, so the /usr/bin driver
 # names become scripts that default CCACHE_DIR and HOME (ccache resolves
 # the home directory at startup even with CCACHE_DIR set, and the

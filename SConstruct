@@ -6,9 +6,8 @@ godot_cpp_dir = os.environ.get("GODOT_CPP_DIR", "third_party/godot-cpp")
 env = SConscript(os.path.join(godot_cpp_dir, "SConstruct"))
 
 # libretro.h (and libretro_vulkan.h) come from our own pinned
-# libretro-common submodule: a single header source, never the copies
-# vendored inside the cores' trees (fceumm's is current, mupen64plus-nx's
-# is an old antique, and neither tree owns the extension's build).
+# libretro-common submodule: the single header source of the extension,
+# the C callback probe and the test dummy.
 env.Append(
 	CPPPATH=[
 		"src",
