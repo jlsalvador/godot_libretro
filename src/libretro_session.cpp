@@ -86,6 +86,9 @@ void LibretroSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_audio_sample_rate"), &LibretroSession::get_audio_sample_rate);
 	ClassDB::bind_method(D_METHOD("is_core_loaded"), &LibretroSession::is_core_loaded);
 	ClassDB::bind_method(D_METHOD("is_game_loaded"), &LibretroSession::is_game_loaded);
+	ClassDB::bind_method(D_METHOD("get_save_state_size"), &LibretroSession::get_save_state_size);
+	ClassDB::bind_method(D_METHOD("create_save_state"), &LibretroSession::create_save_state);
+	ClassDB::bind_method(D_METHOD("restore_save_state", "state"), &LibretroSession::restore_save_state);
 }
 
 LibretroSession::~LibretroSession() {
@@ -120,6 +123,9 @@ bool LibretroSession::_resolve_symbols() {
 	get_memory_data = reinterpret_cast<RetroGetMemoryData>(dlsym(core_handle, "retro_get_memory_data"));
 	get_memory_size = reinterpret_cast<RetroGetMemorySize>(dlsym(core_handle, "retro_get_memory_size"));
 	controller_port_device = reinterpret_cast<RetroSetControllerPortDevice>(dlsym(core_handle, "retro_set_controller_port_device"));
+	serialize_size = reinterpret_cast<RetroSerializeSize>(dlsym(core_handle, "retro_serialize_size"));
+	serialize = reinterpret_cast<RetroSerialize>(dlsym(core_handle, "retro_serialize"));
+	unserialize = reinterpret_cast<RetroUnserialize>(dlsym(core_handle, "retro_unserialize"));
 	return required_symbols;
 }
 
@@ -369,6 +375,9 @@ void LibretroSession::stop() {
 	port_rumble = {};
 	get_memory_data = nullptr;
 	get_memory_size = nullptr;
+	serialize_size = nullptr;
+	serialize = nullptr;
+	unserialize = nullptr;
 }
 
 bool LibretroSession::_start_hw_render() {
@@ -446,6 +455,59 @@ void LibretroSession::_save_save_ram() {
 	if (file.is_valid()) {
 		file->store_buffer(save_data);
 	}
+}
+
+int LibretroSession::get_save_state_size() {
+	if (!serialize_size) {
+		last_error = "This core does not support save states.";
+		return 0;
+	}
+	if (!game_loaded) {
+		last_error = "Load a game before querying the save state size.";
+		return 0;
+	}
+	ActiveSessionScope active_scope(this);
+	return static_cast<int>(serialize_size());
+}
+
+PackedByteArray LibretroSession::create_save_state() {
+	if (!serialize_size || !serialize) {
+		last_error = "This core does not support save states.";
+		return PackedByteArray();
+	}
+	if (!game_loaded) {
+		last_error = "Load a game before creating a save state.";
+		return PackedByteArray();
+	}
+	PackedByteArray state;
+	{
+		ActiveSessionScope active_scope(this);
+		const size_t size = serialize_size();
+		state.resize(static_cast<int64_t>(size));
+		if (!serialize(state.ptrw(), size)) {
+			last_error = "The core failed to serialize its state.";
+			state.clear();
+			return state;
+		}
+	}
+	return state;
+}
+
+bool LibretroSession::restore_save_state(const PackedByteArray &p_state) {
+	if (!unserialize) {
+		last_error = "This core does not support save states.";
+		return false;
+	}
+	if (!game_loaded) {
+		last_error = "Load a game before restoring a save state.";
+		return false;
+	}
+	ActiveSessionScope active_scope(this);
+	if (!unserialize(p_state.ptr(), p_state.size())) {
+		last_error = "The core rejected the save state.";
+		return false;
+	}
+	return true;
 }
 
 void LibretroSession::set_joypad_button(int p_port, int p_button_id, bool p_pressed) {
@@ -708,6 +770,25 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 				return false;
 			}
 			*static_cast<const retro_hw_render_interface_vulkan **>(p_data) = interface;
+			return true;
+		}
+		case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS:
+		case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS_2: {
+			if (!p_data) {
+				return false;
+			}
+			// The size is re-queried before every capture, so variable-sized
+			// states are supported; the remaining bits describe core
+			// restrictions the frontend only honors.
+			*static_cast<uint64_t *>(p_data) |= RETRO_SERIALIZATION_QUIRK_FRONT_VARIABLE_SIZE;
+			return true;
+		}
+		case RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT: {
+			if (p_data) {
+				// No runahead or rollback: every capture is a portable,
+				// load-anywhere state.
+				*static_cast<retro_savestate_context *>(p_data) = RETRO_SAVESTATE_CONTEXT_NORMAL;
+			}
 			return true;
 		}
 		default:

@@ -23,6 +23,7 @@
 #define AUDIO_FRAMES_PER_RUN 800
 #define SAVE_SIZE 32
 #define BIOS_FILE "sample.bios"
+#define DUMMY_STATE_SIZE 16
 
 static retro_environment_t environment;
 static retro_video_refresh_t video_refresh;
@@ -34,6 +35,7 @@ static retro_input_state_t input_state;
 static bool can_dupe;
 static struct retro_log_callback log_cb;
 static uint8_t save_ram[SAVE_SIZE];
+static uint64_t run_frames;
 static bool vulkan_requested;
 
 /* Vulkan state: the extension (frontend) creates the instance and asks
@@ -174,6 +176,9 @@ void retro_init(void) {
   environment(RETRO_ENVIRONMENT_GET_CAN_DUPE, &can_dupe);
   environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log_cb);
 
+  uint64_t quirks = 0;
+  if (environment(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks))
+    log_info("serialization quirks acknowledged");
   static struct retro_hw_render_callback hw_cb;
   static struct retro_hw_render_context_negotiation_interface_vulkan
       negotiation;
@@ -248,6 +253,7 @@ void retro_run(void) {
 
   counter++;
   memcpy(save_ram, &counter, sizeof(counter));
+  run_frames++;
 }
 
 void *retro_get_memory_data(unsigned id) {
@@ -258,6 +264,28 @@ size_t retro_get_memory_size(unsigned id) {
   return id == RETRO_MEMORY_SAVE_RAM ? SAVE_SIZE : 0;
 }
 
+
+size_t retro_serialize_size(void) {
+  return DUMMY_STATE_SIZE;
+}
+
+bool retro_serialize(void *data, size_t size) {
+  if (!data || size < DUMMY_STATE_SIZE)
+    return false;
+  uint8_t *state = (uint8_t *)data;
+  memcpy(state, save_ram, 8);
+  memcpy(state + 8, &run_frames, 8);
+  return true;
+}
+
+bool retro_unserialize(const void *data, size_t size) {
+  if (!data || size < DUMMY_STATE_SIZE)
+    return false;
+  const uint8_t *state = (const uint8_t *)data;
+  memcpy(save_ram, state, 8);
+  memcpy(&run_frames, state + 8, 8);
+  return true;
+}
 unsigned retro_api_version(void) {
   return RETRO_API_VERSION;
 }

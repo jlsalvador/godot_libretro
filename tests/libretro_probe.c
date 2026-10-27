@@ -18,9 +18,15 @@ typedef void (*get_system_info_fn)(struct retro_system_info *);
 typedef void (*get_system_av_info_fn)(struct retro_system_av_info *);
 typedef bool (*load_game_fn)(const struct retro_game_info *);
 typedef void (*run_fn)(void);
+typedef size_t (*serialize_size_fn)(void);
+typedef bool (*serialize_fn)(void *, size_t);
+typedef bool (*unserialize_fn)(const void *, size_t);
 
 static unsigned video_frames;
 static unsigned audio_frames;
+/* The first video pixel: the dummy fills it with its frame counter, so a
+   save-state round trip is observable through it. */
+static uint16_t first_pixel;
 
 static bool environment_callback(unsigned command, void *data) {
 	(void)data;
@@ -39,6 +45,7 @@ static void video_callback(const void *data, unsigned width, unsigned height, si
 	if (data && width && height) {
 		video_frames++;
 	}
+		first_pixel = ((const uint16_t *)data)[0];
 }
 
 static void audio_callback(int16_t left, int16_t right) {
@@ -114,6 +121,11 @@ int main(int argc, char **argv) {
 		dlclose(handle);
 		return 0;
 	}
+	/* Save-state exports are optional for the host, but full mode always
+	   runs the dummy, so require them here. */
+	LOAD_FN(handle, retro_serialize_size, serialize_size_fn);
+	LOAD_FN(handle, retro_serialize, serialize_fn);
+	LOAD_FN(handle, retro_unserialize, unserialize_fn);
 
 	FILE *rom_file = fopen(game_path, "rb");
 	if (!rom_file) {
@@ -158,12 +170,40 @@ int main(int argc, char **argv) {
 	for (unsigned frame = 0; frame < 120; frame++) {
 		retro_run();
 	}
-	printf("%s %s: %ux%u @ %.2f FPS, %.0f Hz audio; callbacks: %u video frames, %u audio frames\n",
+	/* Save-state round trip: the dummy's first video pixel carries its
+	   frame counter, so a restored state must reproduce the pixel seen
+	   thirty runs after the capture. */
+	size_t state_size = retro_serialize_size();
+	static uint8_t state[65536];
+	if (state_size > sizeof(state) || !retro_serialize(state, state_size)) {
+		fprintf(stderr, "Serialization failed.\n");
+		return 1;
+	}
+	const uint16_t baseline = first_pixel;
+	for (unsigned frame = 0; frame < 30; frame++) {
+		retro_run();
+	}
+	const uint16_t advanced = first_pixel;
+	if (advanced == baseline) {
+		fprintf(stderr, "Save state: the frame counter did not advance.\n");
+		return 1;
+	}
+	if (!retro_unserialize(state, state_size)) {
+		fprintf(stderr, "Unserialize failed.\n");
+		return 1;
+	}
+	for (unsigned frame = 0; frame < 30; frame++) {
+		retro_run();
+	}
+	if (first_pixel != advanced) {
+		fprintf(stderr, "Save state round trip mismatch: 0x%x != 0x%x\n", first_pixel, advanced);
+		return 1;
+	}
+	printf("%s %s: %ux%u @ %.2f FPS, %.0f Hz audio; callbacks: %u video frames, %u audio frames; save state: %u bytes\n",
 			info.library_name, info.library_version,
 			av_info.geometry.base_width, av_info.geometry.base_height,
 			av_info.timing.fps, av_info.timing.sample_rate,
-			video_frames, audio_frames);
-
+			video_frames, audio_frames, (unsigned)state_size);
 	retro_unload_game();
 	retro_deinit();
 	free(rom_data);

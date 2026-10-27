@@ -43,6 +43,9 @@ class LibretroSession : public RefCounted {
 	using RetroRun = void (*)();
 	using RetroGetMemoryData = void *(*)(unsigned);
 	using RetroGetMemorySize = size_t (*)(unsigned);
+	using RetroSerializeSize = size_t (*)();
+	using RetroSerialize = bool (*)(void *, size_t);
+	using RetroUnserialize = bool (*)(const void *, size_t);
 	using RetroSetControllerPortDevice = void (*)(unsigned, unsigned);
 	using RetroSetRumbleState = bool (*)(unsigned, retro_rumble_effect, uint16_t);
 
@@ -73,6 +76,9 @@ class LibretroSession : public RefCounted {
 	RetroRun run_core = nullptr;
 	RetroGetMemoryData get_memory_data = nullptr;
 	RetroGetMemorySize get_memory_size = nullptr;
+	RetroSerializeSize serialize_size = nullptr;
+	RetroSerialize serialize = nullptr;
+	RetroUnserialize unserialize = nullptr;
 	RetroSetControllerPortDevice controller_port_device = nullptr;
 
 	PackedByteArray rom_data;
@@ -187,6 +193,9 @@ public:
 	double get_audio_sample_rate() const;
 	bool is_core_loaded() const;
 	bool is_game_loaded() const;
+	int get_save_state_size();
+	PackedByteArray create_save_state();
+	bool restore_save_state(const PackedByteArray &state);
 };
 
 } // namespace godot

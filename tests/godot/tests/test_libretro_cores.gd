@@ -5,7 +5,7 @@ extends SceneTree
 # extension: the same session paths a real core exercises, minus real
 # emulation. The dummy requests frame duping, a system-directory BIOS
 # fixture lookup and a Vulkan device, and the assertions below cover each
-# of those paths plus the save-RAM sidecar.
+# of those paths plus the save-RAM sidecar and save states.
 
 func _initialize() -> void:
 	call_deferred("_run_test")
@@ -63,6 +63,46 @@ func _run_test() -> void:
 		video_frames, audio_frames, elapsed_ms])
 	if video_frames < 120 and audio_frames < 120:
 		failures.append("dummy: expected 120 frames from the sample game, got %d video, %d audio" % [video_frames, audio_frames])
+	# Save states: the dummy's state is its counters and its first video
+	# byte carries them, so a restored state must reproduce the frame
+	# seen thirty runs after the capture.
+	var state_size := session.get_save_state_size()
+	var state := session.create_save_state()
+	if state_size <= 0 or state.size() != state_size:
+		failures.append("dummy states: size query and capture disagree (%d vs %d)" % [state_size, state.size()])
+	if state_size > 0 and not state.is_empty():
+		var first_byte: int = session.get_video_frame()[2]
+		for _state_frame in range(30):
+			session.run_frame()
+		var advanced_byte: int = session.get_video_frame()[2]
+		if advanced_byte == first_byte:
+			failures.append("dummy states: the frame counter did not advance")
+		if not session.restore_save_state(state):
+			failures.append("dummy states: restore rejected the state: %s" % session.get_last_error())
+		else:
+			for _state_frame in range(30):
+				session.run_frame()
+			if session.get_video_frame()[2] != advanced_byte:
+				failures.append("dummy states: the restored state did not reproduce the advanced frame")
+		var quirks_seen := false
+		for line in session.get_core_log_lines():
+			if line == "serialization quirks acknowledged":
+				quirks_seen = true
+				break
+		if not quirks_seen:
+			failures.append("dummy states: no serialization quirks acknowledgement in the core log")
+
+	# A core without a loaded game cannot serialize.
+	var stateless := LibretroSession.new()
+	stateless.set_save_directory(ProjectSettings.globalize_path("res://build/stateless_saves"))
+	if stateless.load_core(ProjectSettings.globalize_path(core_path)):
+		if not stateless.create_save_state().is_empty():
+			failures.append("dummy states: create without a game must fail")
+		if stateless.restore_save_state(state):
+			failures.append("dummy states: restore without a game must fail")
+	else:
+		failures.append("dummy states: failed to load: %s" % stateless.get_last_error())
+	stateless.stop()
 	# The dummy keeps a counter at the start of its SAVE_RAM, so the
 	# sidecar must carry written data after the run; the path is read
 	# before stop, which clears it.
