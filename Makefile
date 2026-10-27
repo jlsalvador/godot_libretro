@@ -214,7 +214,7 @@ define godot_recipe
 	cp $(HOST_EXT_DEBUG) $(GODOT_PROJECT)/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH)/ || exit 1; \
 	printf 'dummy rom' > $(GODOT_PROJECT)/roms/sample.dmy || exit 1; \
 	cp $(DUMMY) $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH)/ || exit 1; \
-	"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --import || true; \
+	"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --import || exit 1; \
 	for t in $(GODOT_PROJECT)/tests/test_*.gd; do \
 		echo "== $$t"; \
 		"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --script res://tests/$$(basename $$t) || exit 1; \
