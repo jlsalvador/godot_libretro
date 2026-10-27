@@ -204,17 +204,24 @@ test-probe: $(HOST_PROBE) $(DUMMY) $(PROBE_ROM) ## Build the dummy and drive it 
 # Headless Godot tests of the extension, run against the host-arch debug
 # extension and the dummy core. Both targets stage their files in the same
 # Godot project, so the lock keeps them apart.
+# The harness is a game-mode consumer: it stages the addon and writes
+# .godot/extension_list.cfg, the list the engine's startup load reads,
+# so no editor pass runs. An editor --import queues a doc regeneration
+# that 4.7 flushes at teardown, on a freed EditorHelp when the worker
+# thread lands late; the flush timing is machine-dependent, and the
+# test never needs the editor's other output.
 define godot_recipe
 @test -n "$(GODOT)" || { echo "No godot binary found; set GODOT=/path/to/godot"; exit 1; }
 @mkdir -p build
 @( flock 9 || exit 1; \
 	rm -f $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH)/*.so; \
+	rm -rf $(GODOT_PROJECT)/.godot; \
 	mkdir -p $(GODOT_PROJECT)/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH) \
-		$(GODOT_PROJECT)/roms $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH) || exit 1; \
+		$(GODOT_PROJECT)/.godot $(GODOT_PROJECT)/roms $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH) || exit 1; \
 	cp $(HOST_EXT_DEBUG) $(GODOT_PROJECT)/addons/godot_libretro/.bin/linux/template_debug/$(HOST_ARCH)/ || exit 1; \
 	printf 'dummy rom' > $(GODOT_PROJECT)/roms/sample.dmy || exit 1; \
 	cp $(DUMMY) $(GODOT_PROJECT)/build/libretro/$(HOST_ARCH)/ || exit 1; \
-	"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --import || exit 1; \
+	printf 'res://addons/godot_libretro/godot_libretro.gdextension\n' > $(GODOT_PROJECT)/.godot/extension_list.cfg || exit 1; \
 	for t in $(GODOT_PROJECT)/tests/test_*.gd; do \
 		echo "== $$t"; \
 		"$(GODOT)" --headless --xr-mode off --path $(GODOT_PROJECT) --script res://tests/$$(basename $$t) || exit 1; \

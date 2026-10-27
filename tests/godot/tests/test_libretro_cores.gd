@@ -20,21 +20,21 @@ func _run_test() -> void:
 	var session := LibretroSession.new()
 	session.set_save_directory(ProjectSettings.globalize_path("res://build/dummy_saves"))
 	if not session.load_core(ProjectSettings.globalize_path(core_path)):
-		failures.append("dummy: failed to load: %s" % session.get_last_error())
+		push_error("dummy: failed to load: %s" % session.get_last_error())
 		quit(1)
 		return
 	if session.get_core_name() != "Dummy":
-		failures.append("dummy: expected core name Dummy, got %s" % session.get_core_name())
+		push_error("dummy: expected core name Dummy, got %s" % session.get_core_name())
 		quit(1)
 		return
 	var extensions: String = session.get_core_extensions()
 	if not extensions.split("|").has("dmy"):
-		failures.append("dummy: expected dmy in core extensions, got %s" % extensions)
+		push_error("dummy: expected dmy in core extensions, got %s" % extensions)
 		quit(1)
 		return
 
 	if not session.load_game(ProjectSettings.globalize_path(rom_path)):
-		failures.append("dummy: failed to load ROM: %s" % session.get_last_error())
+		push_error("dummy: failed to load ROM: %s" % session.get_last_error())
 		session.stop()
 		quit(1)
 		return

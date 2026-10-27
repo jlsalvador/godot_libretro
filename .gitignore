@@ -6,7 +6,6 @@ tests/godot/bios/
 tests/godot/roms/
 __pycache__/
 *.pyc
-*.uid
 .sconsign.dblite
 *.os
 .godot/
