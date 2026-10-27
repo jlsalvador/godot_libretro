@@ -51,109 +51,6 @@ uint8_t expand_6bit(uint16_t p_value) {
 	return static_cast<uint8_t>((p_value << 2) | (p_value >> 4));
 }
 
-// bsnes reports "accepted" for files it cannot actually play (measured:
-// retro_load_game returns true unconditionally for any path but .bs/.gb,
-// e.g. a CD image from another console). For the affected cores, validate
-// the file as a bsnes ROM before trusting the accept: a structural gate
-// header (LoROM/HiROM/ExHiROM) plus supporting indicators, accept at
-// score >= 4. A 512-byte copier header shifts the candidates by 0x200.
-bool looks_like_bsnes_rom(const PackedByteArray &p_data) {
-	const uint8_t *raw = p_data.ptr();
-	size_t n = p_data.size();
-	if (n % 0x400 == 0x200) {
-		raw += 0x200;
-		n -= 0x200;
-	}
-	if (n < 0x8000) {
-		return false;
-	}
-	static const std::vector<std::pair<size_t, std::set<int>>> candidates = {
-		{ 0x7FC0, { 0x0, 0x2, 0x3 } }, // LoROM and its mapping variants.
-		{ 0xFFC0, { 0x1, 0xA } },     // HiROM and its mapping variants.
-		{ 0x40FFC0, { 0x5 } },        // ExHiROM.
-	};
-	static const std::set<int> likely_reset_opcodes = { 0x78, 0x18, 0x38, 0x9C, 0x4C, 0x5C };
-	static const std::set<int> unlikely_reset_opcodes = { 0x00, 0x02, 0xDB, 0x42, 0xFF };
-	for (const auto &candidate : candidates) {
-		const size_t base = candidate.first;
-		if (base + 0x40 > n) {
-			continue;
-		}
-		const uint8_t *h = raw + base;
-		const uint8_t *title = h;
-		const int map_mode = h[0x15];
-		const int rom_size_code = h[0x17];
-		const int ram_size_code = h[0x18];
-		const int region_code = h[0x19];
-		const int complement = h[0x1C] | (h[0x1D] << 8);
-		const int checksum = h[0x1E] | (h[0x1F] << 8);
-		const int reset_vector = h[0x3C] | (h[0x3D] << 8);
-		if ((map_mode & 0xE0) != 0x20) {
-			continue;
-		}
-		if (candidate.second.find(map_mode & 0x0F) == candidate.second.end()) {
-			continue;
-		}
-		if (rom_size_code < 5 || rom_size_code > 14) {
-			continue;
-		}
-		const size_t declared_size = static_cast<size_t>(1) << (rom_size_code + 10);
-		if (n > declared_size) {
-			continue;
-		}
-		if (reset_vector < 0x8000 || reset_vector == 0xFFFF) {
-			continue;
-		}
-		int score = 0;
-		int printable = 0;
-		for (int i = 0; i < 21; i++) {
-			if (title[i] >= 0x20 && title[i] <= 0x7E) {
-				printable++;
-			}
-		}
-		if (printable >= 16) {
-			score += 1;
-		}
-		if (ram_size_code <= 8) {
-			score += 1;
-		}
-		if (region_code <= 0x14) {
-			score += 1;
-		}
-		if ((complement ^ checksum) == 0xFFFF) {
-			score += 1;
-		}
-		if (n == declared_size && (complement ^ checksum) == 0xFFFF) {
-			uint32_t sum = 0;
-			for (size_t i = 0; i < n; i++) {
-				sum += raw[i];
-			}
-			if ((sum & 0xFFFF) == checksum) {
-				score += 2;
-			}
-		}
-		int64_t reset_offset = -1;
-		if (base == 0x7FC0) {
-			reset_offset = reset_vector - 0x8000;
-		} else if (base == 0xFFC0) {
-			reset_offset = reset_vector;
-		} else {
-			reset_offset = 0x400000 + reset_vector - 0x8000;
-		}
-		if (reset_offset >= 0 && static_cast<size_t>(reset_offset) < n) {
-			const int opcode = raw[static_cast<size_t>(reset_offset)];
-			if (likely_reset_opcodes.count(opcode)) {
-				score += 2;
-			} else if (unlikely_reset_opcodes.count(opcode)) {
-				score -= 2;
-			}
-		}
-		if (score >= 4) {
-			return true;
-		}
-	}
-	return false;
-}
 } // namespace
 
 void LibretroSession::_bind_methods() {
@@ -396,17 +293,6 @@ bool LibretroSession::load_game(const String &p_path) {
 		if (!core_load_game(&game)) {
 			last_error = "Libretro core rejected the ROM.";
 			return false;
-	}
-	// A core that reports "accepted" for a file it cannot actually play is a
-	// false accept (measured: bsnes). For the affected cores, validate the
-	// file as a bsnes ROM before trusting the accept.
-	static const std::set<std::string> header_check_cores = { "bsnes_libretro" };
-	if (header_check_cores.count(core_id) && !looks_like_bsnes_rom(rom_data)) {
-		ActiveSessionScope active_scope(this);
-		core_unload_game();
-		game_loaded = false;
-		last_error = "Core accepted the ROM but it has no plausible ROM header.";
-		return false;
 	}
 	game_loaded = true;
 	if (hw_render_requested && !_start_hw_render()) {
