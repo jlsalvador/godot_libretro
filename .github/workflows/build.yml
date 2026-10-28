@@ -126,8 +126,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Tags only: the release body is the tag's own message when the tag carries
-  # one (an annotated tag), and the one-line default otherwise.
+  # Tags only: the release title and body come from the tag's own message when
+  # the tag carries one (an annotated tag), its first line aside; the tag name
+  # and the one-line default fill in when it does not.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: package
@@ -143,27 +144,40 @@ jobs:
         with:
           name: package
           path: dist
-      - name: Resolve the release body
+      - name: Resolve the release title and body
         run: |
           notes="$RUNNER_TEMP/release-notes.md"
+          title="$GITHUB_REF_NAME"
+          message=""
           tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type')
           if [ "$tag_type" = "tag" ]; then
             tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')
-            body=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.message // ""')
-            # An annotated tag with an empty message leaves the default.
-            if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
-              printf '%s\n' "$body" > "$notes"
-            fi
+            message=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.message // ""')
           fi
-          [ -s "$notes" ] || printf 'Precompiled Linux matrix.\n' > "$notes"
-          echo "RELEASE_NOTES=$notes" >> "$GITHUB_ENV"
+          # The message's first line is the release title and the rest its
+          # body, so the release does not repeat its own headline.
+          subject=$(printf '%s\n' "$message" | head -n 1)
+          body=$(printf '%s\n' "$message" | tail -n +2 | sed '/./,$!d')
+          if [ -n "$(printf '%s' "$subject" | tr -d '[:space:]')" ]; then
+            title=$subject
+          fi
+          if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+            printf '%s\n' "$body" > "$notes"
+          else
+            printf 'Precompiled Linux matrix.\n' > "$notes"
+          fi
+          {
+            echo "RELEASE_TITLE=$title"
+            echo "RELEASE_NOTES=$notes"
+          } >> "$GITHUB_ENV"
       - name: Publish the release
         run: |
-          # The tag is the single source of truth for the body, so a re-run
-          # syncs an existing release instead of keeping a stale note.
+          # The tag is the single source of truth for the title and the body,
+          # so a re-run syncs an existing release instead of keeping a stale
+          # one.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file "$RELEASE_NOTES"
+            gh release edit "$GITHUB_REF_NAME" --title "$RELEASE_TITLE" --notes-file "$RELEASE_NOTES"
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --notes-file "$RELEASE_NOTES"
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$RELEASE_TITLE" --notes-file "$RELEASE_NOTES"
           fi
           gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
