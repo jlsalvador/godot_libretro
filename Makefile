@@ -269,12 +269,21 @@ release: extension-all ## Build the full release matrix (no packaging).
 
 ##@ Packaging
 
+# A missing zip would only surface after the whole build, so say it up front
+# when the goal is packaging. The recipe checks it again for any other way of
+# asking for the zip.
+ifneq ($(filter package,$(MAKECMDGOALS)),)
+ifeq ($(shell command -v zip),)
+$(error Missing zip (see the prerequisites in the README))
+endif
+endif
+
 # A single extension zip holding every architecture and variant in the
 # addons/ layout a Godot project can extract over its root. A zip is removed
 # before rebuilding: zip would otherwise update the old archive and keep
 # stale entries.
 $(DIST_ZIP): $(EXT_LIBS) LICENSE $(ADDON_GDEXTENSION)
-	@command -v zip >/dev/null || { echo "Missing zip." >&2; exit 1; }
+	@command -v zip >/dev/null || { echo "Missing zip (see the prerequisites in the README)." >&2; exit 1; }
 	@rm -f $@
 	@mkdir -p $(@D)
 	rm -rf build/package/addons
