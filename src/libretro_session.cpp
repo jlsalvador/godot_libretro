@@ -86,6 +86,9 @@ void LibretroSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_audio_sample_rate"), &LibretroSession::get_audio_sample_rate);
 	ClassDB::bind_method(D_METHOD("is_core_loaded"), &LibretroSession::is_core_loaded);
 	ClassDB::bind_method(D_METHOD("is_game_loaded"), &LibretroSession::is_game_loaded);
+	ClassDB::bind_method(D_METHOD("has_vulkan_device"), &LibretroSession::has_vulkan_device);
+	ClassDB::bind_method(D_METHOD("is_hw_render_active"), &LibretroSession::is_hw_render_active);
+	ClassDB::bind_method(D_METHOD("set_hw_render_enabled", "enabled"), &LibretroSession::set_hw_render_enabled);
 	ClassDB::bind_method(D_METHOD("get_save_state_size"), &LibretroSession::get_save_state_size);
 	ClassDB::bind_method(D_METHOD("create_save_state"), &LibretroSession::create_save_state);
 	ClassDB::bind_method(D_METHOD("restore_save_state", "state"), &LibretroSession::restore_save_state);
@@ -301,11 +304,7 @@ bool LibretroSession::load_game(const String &p_path) {
 			return false;
 	}
 	game_loaded = true;
-	if (hw_render_requested && !_start_hw_render()) {
-		core_unload_game();
-		game_loaded = false;
-		return false;
-	}
+	_start_hw_render();
 	String core_save_directory = String(save_directory.c_str()).path_join(String(core_id.c_str()));
 	if (DirAccess::make_dir_recursive_absolute(core_save_directory) != Error::OK) {
 		core_unload_game();
@@ -380,22 +379,15 @@ void LibretroSession::stop() {
 	unserialize = nullptr;
 }
 
-bool LibretroSession::_start_hw_render() {
+void LibretroSession::_start_hw_render() {
 	if (!hw_render_requested) {
-		return true;
+		return;
 	}
-	if (!has_hw_negotiation) {
-		last_error = "Core requested Vulkan rendering without negotiation info.";
-		return false;
+	// The device was created at SET_HW_RENDER time, when the core's request
+	// was answered truthfully; the core defers graphics init to this point.
+	if (hw_render_request.context_reset) {
+		hw_render_request.context_reset();
 	}
-	std::string error;
-	if (!vulkan_context.ensure_device(&hw_negotiation, error)) {
-		last_error = error.empty() ? "Could not create Vulkan device for hardware rendering." : error;
-		return false;
-	}
-	// The core deferred graphics initialization to this call.
-	hw_render_request.context_reset();
-	return true;
 }
 
 void LibretroSession::_stop_hw_render() {
@@ -647,6 +639,15 @@ double LibretroSession::get_frames_per_second() const { return frames_per_second
 double LibretroSession::get_audio_sample_rate() const { return audio_sample_rate; }
 bool LibretroSession::is_core_loaded() const { return core_initialized; }
 bool LibretroSession::is_game_loaded() const { return game_loaded; }
+bool LibretroSession::has_vulkan_device() const {
+	return hw_render_requested && vulkan_context.has_device();
+}
+bool LibretroSession::is_hw_render_active() const {
+	return hw_render_requested;
+}
+void LibretroSession::set_hw_render_enabled(bool enabled) {
+	hw_render_enabled = enabled;
+}
 
 bool LibretroSession::_set_rumble_state(unsigned p_port, retro_rumble_effect p_effect, uint16_t p_strength) {
 	if (active_session == nullptr || p_port >= MAX_PLAYERS || (p_effect != RETRO_RUMBLE_STRONG && p_effect != RETRO_RUMBLE_WEAK)) {
@@ -746,6 +747,20 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			}
 			const retro_hw_render_callback *request = static_cast<const retro_hw_render_callback *>(p_data);
 			if (request->context_type != RETRO_HW_CONTEXT_VULKAN) {
+				return false;
+			}
+			if (!active_session->hw_render_enabled) {
+				return false;
+			}
+			// Answer the core truthfully: accept only if we can actually
+			// provide a device. A software-rendering core falls back when
+			// we decline, so a missing driver must not strand the load.
+			if (!active_session->has_hw_negotiation) {
+				return false;
+			}
+			std::string error;
+			if (!active_session->vulkan_context.ensure_device(&active_session->hw_negotiation, error)) {
+				active_session->vulkan_context.shutdown();
 				return false;
 			}
 			active_session->hw_render_request = *request;

@@ -127,6 +127,7 @@ class LibretroSession : public RefCounted {
 	retro_hw_render_callback hw_render_request = {};
 	retro_hw_render_context_negotiation_interface_vulkan hw_negotiation = {};
 	bool hw_render_requested = false;
+	bool hw_render_enabled = true;
 	bool has_hw_negotiation = false;
 
 	static bool _environment_callback(unsigned command, void *data);
@@ -149,7 +150,7 @@ class LibretroSession : public RefCounted {
 	void _receive_audio(int16_t left, int16_t right);
 	void _receive_audio_batch(const int16_t *data, size_t frames);
 	int16_t _read_input(unsigned port, unsigned device, unsigned index, unsigned id) const;
-	bool _start_hw_render();
+	void _start_hw_render();
 	void _stop_hw_render();
 
 protected:
@@ -165,6 +166,7 @@ public:
 	String get_save_ram_path() const;
 	void set_system_directory(const String &path);
 	String get_system_directory() const;
+	void set_hw_render_enabled(bool enabled);
 	PackedStringArray get_core_log_lines() const;
 	bool load_game(const String &path);
 	void run_frame();
@@ -177,6 +179,8 @@ public:
 	float get_analog_axis(int port, int axis) const;
 	Vector2 get_rumble(int port) const;
 	bool has_rumble_interface() const;
+	bool has_vulkan_device() const;
+	bool is_hw_render_active() const;
 	void set_core_option(const String &key, const String &value);
 	String get_core_option(const String &key) const;
 
