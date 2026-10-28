@@ -126,9 +126,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Tags only: the release title and body come from the tag's own message when
-  # the tag carries one (an annotated tag), its first line aside; the tag name
-  # and the one-line default fill in when it does not.
+  # Tags only: the release title is "<tag>: <first line of the tag message>"
+  # and the body is the rest of that message when the tag carries one (an
+  # annotated tag); the bare tag name and the one-line default fill in when it
+  # does not.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: package
@@ -154,12 +155,13 @@ jobs:
             tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')
             message=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.message // ""')
           fi
-          # The message's first line is the release title and the rest its
-          # body, so the release does not repeat its own headline.
+          # The message's first line titles the release next to the tag name,
+          # and the rest is its body, so the release does not repeat its own
+          # headline.
           subject=$(printf '%s\n' "$message" | head -n 1)
           body=$(printf '%s\n' "$message" | tail -n +2 | sed '/./,$!d')
           if [ -n "$(printf '%s' "$subject" | tr -d '[:space:]')" ]; then
-            title=$subject
+            title="$GITHUB_REF_NAME: $subject"
           fi
           if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
             printf '%s\n' "$body" > "$notes"
