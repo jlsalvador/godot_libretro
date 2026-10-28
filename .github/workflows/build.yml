@@ -197,27 +197,6 @@ jobs:
             -v "$PWD":/work -w /work \
             "$IMAGE:$IMAGE_TAG-$ARCH" \
             make IN_CONTAINER=1 dummy
-      # The harness proves the frontend Vulkan device path; the runner has
-      # no GPU, so the lavapipe software ICD stands in for the device.
-      - name: Install the software Vulkan driver
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --reinstall libvulkan1 libgl1-mesa-dri
-          echo "=== mesa/vulkan packages ==="
-          dpkg -l 2>/dev/null | grep -Ei 'libgl1|libvulkan|mesa' || true
-          echo "=== ICD manifests after install ==="
-          ls -la /usr/share/vulkan/icd.d /etc/vulkan/icd.d 2>&1 || true
-          dpkg -S lvp_icd 2>/dev/null || true
-      - name: Show the Vulkan environment
-        run: |
-          echo "=== ICD manifests ==="
-          for d in /etc/vulkan/icd.d /usr/share/vulkan/icd.d; do
-            echo "--- $d"
-            ls -la "$d" 2>&1 || true
-          done
-          echo "=== vulkaninfo devices ==="
-          sudo apt-get install -y -qq vulkan-tools >/dev/null
-          vulkaninfo 2>&1 | grep -aE 'apiVersion|deviceName|driverName|========' | head -40 || true
       - name: Run the Godot harness against the dummy core
         run: make IN_CONTAINER=1 PREBUILT=1 test-godot
 

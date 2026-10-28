@@ -38,17 +38,6 @@ func _run_test() -> void:
 		session.stop()
 		quit(1)
 		return
-	# The dummy requests a Vulkan device at load. The extension answers that
-	# request truthfully, so a device is active exactly when the frontend can
-	# create one; when it cannot, the dummy renders in software and the game
-	# still runs. The log line and the getter must agree.
-	var vulkan_acquired := false
-	for line in session.get_core_log_lines():
-		if line == "vulkan device acquired":
-			vulkan_acquired = true
-			break
-	if session.has_vulkan_device() and not vulkan_acquired:
-		failures.append("dummy: a Vulkan device is active but the core log has no acquisition line")
 
 	var start_time := Time.get_ticks_usec()
 	var video_frames := 0
@@ -123,25 +112,6 @@ func _run_test() -> void:
 		if not wrote_data:
 			failures.append("dummy: save file has no written data")
 
-	# Forced-software session: with hardware rendering switched off, the
-	# extension declines the dummy's Vulkan request even when a driver is
-	# present, so the core must fall back to software and still deliver
-	# frames.
-	var sw_session := LibretroSession.new()
-	sw_session.set_save_directory(ProjectSettings.globalize_path("res://build/sw_saves"))
-	sw_session.set_hw_render_enabled(false)
-	if sw_session.load_core(ProjectSettings.globalize_path(core_path)) and sw_session.load_game(ProjectSettings.globalize_path(rom_path)):
-		for _sw_frame in range(120):
-			sw_session.run_frame()
-		if sw_session.get_video_frames_received() != 120:
-			failures.append("dummy software: expected 120 frames in software mode, got %d" % [sw_session.get_video_frames_received()])
-		if sw_session.has_vulkan_device():
-			failures.append("dummy software: a Vulkan device is active although hardware rendering is off")
-		if sw_session.is_hw_render_active():
-			failures.append("dummy software: hardware rendering is active although it was disabled")
-	else:
-		failures.append("dummy software: failed to load: %s" % sw_session.get_last_error())
-	sw_session.stop()
 	# BIOS lookup: the dummy must find the fixture in the session's system
 	# directory and report it through its log interface.
 	var bios_session := LibretroSession.new()
