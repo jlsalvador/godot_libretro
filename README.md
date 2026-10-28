@@ -59,8 +59,9 @@ another architecture, e.g. to run the harness on a device.
 `make package` needs the matrix built first: the zip takes its artifacts from
 `build/godot_libretro/` and stops with the missing path if it is not there.
 
-Set `CCACHE=ccache` (and `CCACHE_DIR`) to put a compiler cache in front of the
-toolchain, which is what CI does.
+Builds go through ccache when it is installed (`CCACHE=` disables it, and
+`CCACHE_DIR` moves the cache); the cache lives in `.ccache/`, which `make
+clean` keeps, and CI enables it the same way.
 
 ## Architecture and the glibc baseline
 

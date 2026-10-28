@@ -50,6 +50,17 @@ ifndef GODOT
 GODOT := $(shell command -v godot 2>/dev/null)
 endif
 
+# A compiler cache in front of the toolchain, the way the container used to
+# wrap the compilers: enabled when ccache is installed, kept in .ccache/ (which
+# make clean leaves alone), and disabled with CCACHE= on the command line. The
+# toolchain is stable between runs, so ccache's default compiler check (mtime)
+# is enough; CI sets CCACHE_COMPILERCHECK=content because it downloads the
+# toolchain on every run.
+CCACHE ?= $(shell command -v ccache 2>/dev/null)
+CCACHE_DIR ?= $(ROOTDIR)/.ccache
+export CCACHE
+export CCACHE_DIR
+
 # Debug variants keep full DWARF (-g2 from godot-cpp) so a crash on the
 # headset resolves to file and line; the release variant links with -s.
 # Measured on the x86_64 addon: 522 KB stripped release, 10.8 MB with DWARF,
