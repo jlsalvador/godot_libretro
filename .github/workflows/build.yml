@@ -202,7 +202,7 @@ jobs:
       - name: Install the software Vulkan driver
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libvulkan1 libgl1-mesa-dri
+          sudo apt-get install -y -qq --reinstall libvulkan1 libgl1-mesa-dri
           echo "=== mesa/vulkan packages ==="
           dpkg -l 2>/dev/null | grep -Ei 'libgl1|libvulkan|mesa' || true
           echo "=== ICD manifests after install ==="
