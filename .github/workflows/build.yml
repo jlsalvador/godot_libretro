@@ -1,28 +1,19 @@
-# Builds the linux matrix inside the pinned Debian 12 (GCC 12) toolchain image
-# of each architecture, natively, like the local flow. Every build command
-# lives in the Makefile: CI starts the container itself and runs
-# `make IN_CONTAINER=1 <target>` inside it, so nothing here repeats compiler
-# flags.
+# Builds the linux matrix with the pinned Bootlin cross toolchains, on an
+# x86_64 runner: arm64 is cross-compiled, so no container, emulator or arm64
+# machine is involved. Every build command lives in the Makefile, and this
+# workflow only arranges the steps around it.
 #
-# arm64 containers run under qemu on the amd64 runner (measured locally: a
-# CPU-bound gzip of 200 MB took 0.71 s native and 2.26 s emulated). To use
-# native arm64 runners instead (free for public repositories), set the
-# repository variable ARM_RUNNER to `ubuntu-24.04-arm`: qemu is then skipped.
-#
-# Flow: toolchain (fill the docker layer cache of each architecture) -> the
-# extension build of each architecture (reusable workflow, in parallel) ->
-# test-godot (headless Godot harness on the x86_64 extension, against the dummy
-# test core) -> package -> publish (tags only; the release body is the tag's
-# own message when it has one).
+# Flow: the extension build of each architecture (reusable workflow, in
+# parallel) -> test-godot (headless Godot harness on the x86_64 extension,
+# against the dummy test core) -> package -> publish (tags only; the release
+# body is the tag's own message when it has one).
 #
 # A release (a tag push or a manual run) builds both architectures. Branch
 # pushes and pull requests build x86_64 only and stop after the harness: the
-# arm64 build runs under qemu and nothing but a release needs it.
+# arm64 build is the one a release needs, and nothing else does.
 #
-# Extension artifacts restore a per-job ccache (actions/cache/restore) and save
-# it under a per-run key (actions/cache/save); the builds are disjoint trees,
-# so one key per architecture, and a re-run of the same tag only compiles the
-# sources that changed.
+# The extension jobs share a per-architecture ccache (actions/cache), so a tag
+# build after the first only compiles the sources that changed.
 #
 # Actions are pinned by commit SHA with the version in the trailing comment:
 # bump both together.
@@ -51,56 +42,21 @@ env:
   GODOT_SHA512: 9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65
 
 jobs:
-  # Fills the docker layer cache of the architecture each extension build
-  # needs; the builds then load the image from it (a cache miss rebuilds it).
-  # A release run asks for both architectures; a branch push or a pull request
-  # asks for x86_64 only, because the arm64 image exists to build arm64
-  # releases and runs under qemu.
-  toolchain:
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["x86_64", "arm64"]' || '["x86_64"]') }}
-    runs-on: ${{ matrix.arch == 'arm64' && vars.ARM_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # Nothing is compiled here: the Containerfile and the action that
-          # builds it are all this job needs.
-          sparse-checkout: |
-            tools
-            .github/actions
-      - uses: ./.github/actions/toolchain
-        with:
-          arch: ${{ matrix.arch }}
-          platform: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
-          qemu: ${{ matrix.arch == 'arm64' && !vars.ARM_RUNNER }}
-          mode: cache
-
   # One call per architecture instead of one matrix job: the Godot harness
-  # needs the x86_64 artifact and must not wait for the arm64 build, which is
-  # the slow one under qemu.
+  # needs the x86_64 artifact and must not wait for the arm64 build.
   extension-x86_64:
-    needs: toolchain
     uses: ./.github/workflows/extension.yml
     with:
       arch: x86_64
-      platform: linux/amd64
       elf_arch: x86-64
 
   extension-arm64:
     # Releases only: a branch push or a pull request stops after the harness.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    needs: toolchain
     uses: ./.github/workflows/extension.yml
     with:
       arch: arm64
-      platform: linux/arm64
       elf_arch: aarch64
-      qemu: ${{ !vars.ARM_RUNNER }}
-      runs_on: ${{ vars.ARM_RUNNER || 'ubuntu-24.04' }}
 
   # The package job skips the Makefile's verification gate (SKIP_VERIFY=1)
   # because this job runs the Godot harness: it loads the x86_64 extension
@@ -109,9 +65,6 @@ jobs:
     needs: extension-x86_64
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      PLATFORM: linux/amd64
-      ARCH: x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -119,17 +72,6 @@ jobs:
           persist-credentials: false
       - name: Initialize submodules (single level)
         run: make submodules
-      # The dummy core compiles against the pinned libretro.h, so it builds in
-      # the toolchain container; the harness itself runs natively, as in the
-      # local flow.
-      - name: Build the dummy test core
-        uses: ./.github/actions/toolchain
-        with:
-          arch: ${{ env.ARCH }}
-          platform: ${{ env.PLATFORM }}
-          command: make IN_CONTAINER=1 dummy
-      - name: Run the raw Libretro probe against the dummy
-        run: make IN_CONTAINER=1 test-probe
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: extension-x86_64
@@ -145,9 +87,12 @@ jobs:
           unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
           chmod +x "$RUNNER_TEMP/godot/${zip%.zip}"
           echo "GODOT=$RUNNER_TEMP/godot/${zip%.zip}" >> "$GITHUB_ENV"
-      # PREBUILT=1: the extension comes from the artifact.
-      - name: Run the Godot harness against the dummy core
-        run: make IN_CONTAINER=1 PREBUILT=1 test-godot
+      # PREBUILT=1: the extension comes from the artifact. The dummy core and
+      # the probe are built here with the host tools.
+      - name: Run the raw Libretro probe and the Godot harness
+        run: |
+          make test-probe
+          make PREBUILT=1 test-godot
 
   package:
     # Releases only, and the zip carries both architectures: a branch push or
@@ -157,9 +102,6 @@ jobs:
     needs: [extension-x86_64, extension-arm64, test-godot]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      PLATFORM: linux/amd64
-      ARCH: x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -176,11 +118,7 @@ jobs:
       # SKIP_VERIFY=1 also means PREBUILT: the unpacked binaries are used as
       # they are.
       - name: Package the extension zip
-        uses: ./.github/actions/toolchain
-        with:
-          arch: ${{ env.ARCH }}
-          platform: ${{ env.PLATFORM }}
-          command: make IN_CONTAINER=1 package SKIP_VERIFY=1 VERSION=${{ steps.version.outputs.version }}
+        run: make package SKIP_VERIFY=1 VERSION=${{ steps.version.outputs.version }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package

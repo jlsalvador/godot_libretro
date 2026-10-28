@@ -31,6 +31,15 @@ if toolchain:
 
 env = SConscript(os.path.join(godot_cpp_dir, "SConstruct"))
 
+# An optional compiler cache in front of the tools the build chose, host or
+# toolchain. A toolchain restored from a cache has fresh mtimes, so the caller
+# sets CCACHE_COMPILERCHECK=content when it relies on one.
+ccache = os.environ.get("CCACHE", "")
+if ccache:
+	for name in ["CC", "CXX", "LINK", "SHLINK"]:
+		if env[name]:
+			env[name] = ccache + " " + env[name]
+
 # A cross toolchain's sysroot does not carry the Vulkan headers, and the host
 # include directory must not leak into a cross build (its glibc headers would
 # shadow the target's). The caller points this at a directory holding only the

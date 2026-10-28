@@ -1,7 +1,11 @@
-# One architecture of the extension build: the toolchain image, the ccache, the
-# architecture check and the artifact. build.yml calls it once per
+# One architecture of the extension build: the pinned cross toolchain, the
+# ccache, the architecture check and the artifact. build.yml calls it once per
 # architecture, so a job that needs only one of them (the Godot harness runs
 # the x86_64 build) does not wait for the other one.
+#
+# Both architectures are cross-compiled on an x86_64 runner: no qemu, no arm64
+# machine and no container are involved. The toolchain tarball carries the
+# target glibc, so it is also what fixes the glibc baseline of the artifacts.
 #
 # Actions are pinned by commit SHA with the version in the trailing comment:
 # bump both together.
@@ -14,29 +18,15 @@ on:
         description: x86_64 or arm64.
         required: true
         type: string
-      platform:
-        description: OCI platform of the toolchain image, e.g. linux/amd64.
-        required: true
-        type: string
       elf_arch:
         description: Architecture name `file` prints for the built .so.
         required: true
         type: string
-      qemu:
-        description: Set up qemu, when the image is foreign to the runner.
-        required: false
-        type: boolean
-        default: false
-      runs_on:
-        description: Runner label.
-        required: false
-        type: string
-        default: ubuntu-24.04
 
 jobs:
   extension:
-    runs-on: ${{ inputs.runs_on }}
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,19 +34,28 @@ jobs:
           persist-credentials: false
       - name: Initialize submodules (single level)
         run: make submodules
+      # scons builds, and libvulkan-dev is only needed for its headers: the
+      # extension opens libvulkan at runtime and never links it.
+      - name: Install the build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y scons libvulkan-dev
+      - name: Download and verify the cross toolchain
+        run: make toolchain ARCH=${{ inputs.arch }}
       - name: Restore the ccache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
-          key: ccache-${{ inputs.arch }}-v1-extension
-          restore-keys: ccache-${{ inputs.arch }}-v1-extension
+          key: ccache-${{ inputs.arch }}-v2-extension
+          restore-keys: ccache-${{ inputs.arch }}-v2-extension
       - name: Build the extension (debug and release)
-        uses: ./.github/actions/toolchain
-        with:
-          arch: ${{ inputs.arch }}
-          platform: ${{ inputs.platform }}
-          qemu: ${{ inputs.qemu }}
-          command: make IN_CONTAINER=1 extension-variants ARCH=${{ inputs.arch }}
+        env:
+          CCACHE: ccache
+          CCACHE_DIR: .ccache
+          # The toolchain is downloaded fresh on every run: its compiler has a
+          # new mtime, so ccache must hash the content to hit the cache.
+          CCACHE_COMPILERCHECK: content
+        run: make extension-variants ARCH=${{ inputs.arch }}
       # A run_attempt in the key keeps a re-run from saving over its own cache,
       # and a failed compile still leaves a usable ccache. A cache that cannot
       # be saved (a fork pull request, a cancelled run) must not fail the build.
@@ -66,7 +65,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
-          key: ccache-${{ inputs.arch }}-v1-extension-r${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-${{ inputs.arch }}-v2-extension-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Check the artifact architecture
         run: |
           # Both variants must be there: the package job assembles the zip

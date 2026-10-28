@@ -14,6 +14,11 @@
 # rebuilt only when a binary really changed. The ARCH variable only picks
 # which files the convenience targets (extension, test-godot...) ask for.
 #
+# Every build runs on the host with a pinned cross toolchain (see the Bootlin
+# section below): arm64 artifacts are cross-compiled from an x86_64 host, so
+# neither a container nor an arm64 machine is needed to build either
+# architecture.
+#
 # Outer parallelism (make -j) is correct, but the inner builds already use
 # -j$(JOBS), so `make -j` oversubscribes the CPU: prefer plain `make`.
 
@@ -24,15 +29,9 @@ MAKEFLAGS += --no-builtin-rules
 
 ROOTDIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-# IMAGE, IMAGE_TAG, PODMAN, MOUNT_OPTS, TARGET, ARCH, JOBS, VERSION, GODOT
-# and SKIP_VERIFY take an exported environment value over the defaults
-# below, so pass them on the make command line.
-IMAGE ?= godot-libretro-toolchain
-IMAGE_TAG ?= 12
-PODMAN ?= podman
-# Extra options appended to the bind mount of the repository, e.g.
-# MOUNT_OPTS=:Z on SELinux hosts (Fedora/RHEL), where the mount is otherwise denied.
-MOUNT_OPTS ?=
+# TARGET, ARCH, JOBS, VERSION, GODOT and SKIP_VERIFY take an exported
+# environment value over the defaults below, so pass them on the make command
+# line.
 # Extension variant built by the `extension` convenience target.
 TARGET ?= template_debug
 
@@ -65,55 +64,24 @@ SKIP_VERIFY ?=
 SKIP_GATES := $(filter 1,$(SKIP_VERIFY))
 
 # PREBUILT=1 means the extension libraries already exist, e.g. unpacked CI
-# artifacts built natively per architecture, and no rule rebuilds them (a
-# foreign architecture cannot be built in the current container anyway);
-# the files are used as they are. PREBUILT defaults to SKIP_VERIFY: CI
-# passes both together.
+# artifacts, and no rule rebuilds them; the files are used as they are.
+# PREBUILT defaults to SKIP_VERIFY: CI passes both together.
 PREBUILT ?= $(SKIP_VERIFY)
-# One pinned Debian 12 (GCC 12) toolchain image per architecture, and every
-# build runs natively inside the image of its own architecture. Two reasons,
-# both measured: host toolchain drift changes the artifacts, and
-# cross-compiling from the host does not work for this stack (godot-cpp's
-# SConstruct builds an explicit Environment that discards CC/CXX overrides).
+
 ARCHES := x86_64 arm64
-oci_x86_64 := amd64
-oci_arm64 := arm64
-uname_x86_64 := x86_64
-uname_arm64 := aarch64
 
 ifeq ($(filter $(ARCH),$(ARCHES)),)
 $(error Unsupported target architecture: $(ARCH))
 endif
 
-image_of = $(IMAGE):$(IMAGE_TAG)-$(1)
-
-# IN_CONTAINER=1 runs the recipes in the current shell: CI starts the toolchain
-# container itself and calls make inside it, so the Makefile must not nest a
-# podman run there. Packaging always uses the host-architecture image: zipping
-# is architecture-neutral and the image is the only place guaranteed to carry
-# the same zip and md5sum as every other build.
-ifeq ($(IN_CONTAINER),1)
-run_in = bash -c
-check_image = :
-else
-run_in = $(PODMAN) run --rm --platform linux/$(oci_$(1)) --network none -v $(ROOTDIR):/work$(MOUNT_OPTS) -w /work $(call image_of,$(1)) bash -c
-# A wrong-architecture image would build wrong-architecture artifacts without
-# any error (the recipes never name a compiler), so refuse before building.
-check_image = actual=$$($(PODMAN) run --rm --platform linux/$(oci_$(1)) $(call image_of,$(1)) uname -m); \
-	[ "$$actual" = "$(uname_$(1))" ] || { \
-		echo "Image $(call image_of,$(1)) runs '$$actual', expected $(uname_$(1))." >&2; \
-		echo "Build it first: make toolchain-image-$(1)" >&2; exit 1; }
-endif
-package_run = $(call run_in,$(HOST_ARCH))
-
-# --- Bootlin toolchains: the extension build without a container.
+# --- Bootlin toolchains: the extension is cross-compiled with them.
 #
 # The tarballs are relocatable and carry the target glibc, so the sysroot of
-# the toolchain is what fixes the baseline the artifacts require (2.35 here).
-# They live in .cache/ so that make clean (which removes build/ and dist/)
-# does not throw them away, and they are pinned by the sha256 below instead of
-# the checksum file next to them, which comes from the same server as the
-# tarball itself.
+# the toolchain is what fixes the baseline the artifacts require: 2.35 here,
+# of which the artifacts end up referencing up to 2.34. They live in .cache/
+# so that make clean (which removes build/ and dist/) does not throw them
+# away, and they are pinned by the sha256 below instead of the checksum file
+# next to them, which comes from the same server as the tarball itself.
 BOOTLIN_VERSION := 2022.08-1
 BOOTLIN_ROOT := .cache/toolchains
 BOOTLIN_BASE := https://toolchains.bootlin.com/downloads/releases/toolchains
@@ -128,11 +96,18 @@ bootlin_url_x86_64 := x86-64
 bootlin_dir_x86_64 := x86-64--glibc--stable-$(BOOTLIN_VERSION)
 bootlin_triple_x86_64 := x86_64-buildroot-linux-gnu
 bootlin_sha_x86_64 := 861c1e8ad0a66e4c28e7a1f8319d68080ab0ff8d16a765e65540f1957203a190
-bootlin_dir = $(bootlin_dir_$(1))
-bootlin_triple = $(bootlin_triple_$(1))
 # Nested $(call) does not see the outer parameters in GNU make (the inner call
 # rebinds $(1)), so these expand the per-architecture variables directly.
+bootlin_dir = $(bootlin_dir_$(1))
+bootlin_triple = $(bootlin_triple_$(1))
 bootlin_ready = $(BOOTLIN_ROOT)/$(bootlin_dir_$(1))/.verified
+bootlin_cc = $(ROOTDIR)/$(BOOTLIN_ROOT)/$(bootlin_dir_$(1))/bin/$(bootlin_triple_$(1))-gcc
+# Prerequisites of the pattern rules below. A $(call) is expanded while the
+# prerequisites are first read, when $* is still empty, so these keep the
+# per-architecture lookup inside a plain variable and only resolve during the
+# secondary expansion that .SECONDEXPANSION asks for.
+stem_ready = $(BOOTLIN_ROOT)/$(bootlin_dir_$(stem_arch))/.verified
+dummy_ready = $(BOOTLIN_ROOT)/$(bootlin_dir_$*)/.verified
 BOOTLIN_MARKERS := $(foreach a,$(ARCHES),$(call bootlin_ready,$(a)))
 # A cross toolchain has no Vulkan headers, and adding the host /usr/include
 # would shadow the target's glibc headers: only the Vulkan header folders
@@ -153,14 +128,9 @@ ADDON_DIR := tests/godot/addons/godot_libretro
 # The addon descriptor ships in the zip, so editing it must rebuild the zip.
 ADDON_GDEXTENSION := $(ADDON_DIR)/godot_libretro.gdextension
 
-CHECK_IMAGE_TARGETS := $(addprefix check-image-,$(ARCHES))
-TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
-
 .PHONY: FORCE all help release package clean \
-	submodules toolchain-image toolchain-images $(TOOLCHAIN_TARGETS) \
-	check-image-arch $(CHECK_IMAGE_TARGETS) \
-	extension extension-variants extension-all \
-	bootlin-toolchains bootlin-extension bootlin-extension-all dummy \
+	toolchain toolchains submodules \
+	extension extension-variants extension-all dummy \
 	test-probe test-godot
 FORCE:
 
@@ -172,57 +142,8 @@ help: ## Display this help.
 
 ##@ Build
 
-$(TOOLCHAIN_TARGETS): toolchain-image-%:
-	$(PODMAN) build --platform linux/$(oci_$*) -t $(call image_of,$*) $(ROOTDIR)/tools
-
-toolchain-image: toolchain-image-$(ARCH) ## Build the toolchain image for ARCH.
-toolchain-images: $(TOOLCHAIN_TARGETS) ## Build both toolchain images.
-
-$(CHECK_IMAGE_TARGETS): check-image-%:
-	@$(call check_image,$*)
-
-check-image-arch: check-image-$(ARCH) ## Check that the toolchain image for ARCH runs the expected architecture.
-
-submodules: ## Initialize submodules (no-op inside a container).
-ifeq ($(IN_CONTAINER),1)
-	@:
-else
-	git -C $(ROOTDIR) submodule update --init
-endif
-
-# --- GDExtension: stem is <arch>/<variant>, variant debug or release.
-EXT_LIBS := $(foreach a,$(ARCHES),$(foreach v,debug release,build/godot_libretro/$(a)/$(v)/libgodot_libretro.so))
-
-# Files of the matrix.
-DIST_ZIP := dist/godot_libretro-linux-extension-$(VERSION).zip
-
-# The extension paths are <arch>/<variant>; these recover the parts (used
-# in recipes).
-stem_arch = $(firstword $(subst /, ,$*))
-stem_variant = $(lastword $(subst /, ,$*))
-
-# The extension is built by godot-cpp's SConstruct (objects per architecture
-# and variant, see SConstruct), inside the toolchain container of its own
-# architecture.
-ifneq ($(PREBUILT),1)
-$(EXT_LIBS): build/godot_libretro/%/libgodot_libretro.so: FORCE | submodules check-image-$$(stem_arch)
-	$(call run_in,$(stem_arch)) 'scons -j$(JOBS) target=template_$(stem_variant) arch=$(stem_arch) api_version=4.7 debug_symbols=$(call ext_symbols,$(stem_variant))'
-endif
-
-# An unknown TARGET only fails here (no rule for its file), not for other targets.
-extension: build/godot_libretro/$(ARCH)/$(patsubst template_%,%,$(TARGET))/libgodot_libretro.so ## Build the GDExtension for ARCH/TARGET.
-extension-variants: $(foreach v,debug release,build/godot_libretro/$(ARCH)/$(v)/libgodot_libretro.so) ## Extension for ARCH, debug and release.
-extension-all: $(EXT_LIBS) ## Extension for both arches, debug and release.
-
-# --- Bootlin builds: nothing here starts a container, so the compilers and the
-# Vulkan headers come from the tarballs above and the host.
-#
-# $(1) = architecture, $(2) = variant (debug or release). One scons run per
-# architecture and variant; the toolchain of the target architecture is picked
-# by name, so a single line commands one build.
-bootlin_compile = echo '== $(1)/$(2)'; TOOLCHAIN='$(ROOTDIR)/$(BOOTLIN_ROOT)/$(bootlin_dir_$(1))' TOOLCHAIN_TRIPLE='$(bootlin_triple_$(1))' VULKAN_INCLUDE='$(ROOTDIR)/$(BOOTLIN_VULKAN)' scons -j$(JOBS) target=template_$(2) arch=$(1) api_version=4.7 debug_symbols=$(call ext_symbols,$(2));
-
-# $(1) = toolchain directory, $(2) = architecture of its URL, $(3) = sha256.
+# The toolchains are downloaded once (about 135 MB each) and verified against
+# the pinned sha256; the marker file records a completed download.
 define bootlin_fetch
 set -e; mkdir -p '$(ROOTDIR)/$(BOOTLIN_ROOT)/download'; \
 	dir='$(1)'; cd '$(ROOTDIR)/$(BOOTLIN_ROOT)/download'; \
@@ -240,8 +161,7 @@ $(call bootlin_ready,x86_64):
 
 # The Vulkan headers are the only host headers a cross build needs (the
 # extension never links libvulkan, it opens it at runtime), and the toolchain's
-# sysroot does not carry them. Only those two folders are exposed: adding the
-# host /usr/include would shadow the target's glibc headers.
+# sysroot does not carry them.
 $(BOOTLIN_VULKAN)/.headers:
 	@set -e; for dir in vulkan vk_video; do \
 		test -d /usr/include/$$dir || { \
@@ -252,22 +172,52 @@ $(BOOTLIN_VULKAN)/.headers:
 	ln -sfn /usr/include/vk_video $(@D)/vk_video
 	touch $@
 
-bootlin-toolchains: $(BOOTLIN_MARKERS) ## Download and verify the pinned cross toolchains.
-bootlin-extension: $(call bootlin_ready,$(ARCH)) $(BOOTLIN_VULKAN)/.headers ## Build ARCH/TARGET with the Bootlin toolchain, no container.
-	@set -e; $(call bootlin_compile,$(ARCH),$(patsubst template_%,%,$(TARGET)))
-bootlin-extension-all: $(BOOTLIN_MARKERS) $(BOOTLIN_VULKAN)/.headers ## Build both arches and variants with the Bootlin toolchains.
-	@set -e; $(foreach a,$(ARCHES),$(foreach v,debug release,$(call bootlin_compile,$(a),$(v))))
+toolchain: $(call bootlin_ready,$(ARCH)) ## Download and verify the pinned toolchain for ARCH.
+toolchains: $(BOOTLIN_MARKERS) ## Download and verify the pinned toolchains of both architectures.
+
+submodules: ## Initialize submodules.
+	git -C $(ROOTDIR) submodule update --init
+
+# $(1) = architecture, $(2) = variant (debug or release). One scons run per
+# architecture and variant; the toolchain of the target architecture is picked
+# by name, so a single line commands one build. CCACHE, when set, wraps the
+# compiler inside SConstruct.
+bootlin_compile = echo '== $(1)/$(2)'; TOOLCHAIN='$(ROOTDIR)/$(BOOTLIN_ROOT)/$(bootlin_dir_$(1))' TOOLCHAIN_TRIPLE='$(bootlin_triple_$(1))' VULKAN_INCLUDE='$(ROOTDIR)/$(BOOTLIN_VULKAN)' scons -j$(JOBS) target=template_$(2) arch=$(1) api_version=4.7 debug_symbols=$(call ext_symbols,$(2));
+
+# --- GDExtension: stem is <arch>/<variant>, variant debug or release.
+EXT_LIBS := $(foreach a,$(ARCHES),$(foreach v,debug release,build/godot_libretro/$(a)/$(v)/libgodot_libretro.so))
+
+# Files of the matrix.
+DIST_ZIP := dist/godot_libretro-linux-extension-$(VERSION).zip
+
+# The extension paths are <arch>/<variant>; these recover the parts (used
+# in recipes).
+stem_arch = $(firstword $(subst /, ,$*))
+stem_variant = $(lastword $(subst /, ,$*))
+
+# The extension is built by godot-cpp's SConstruct (objects per architecture
+# and variant, see SConstruct) with the cross toolchain of its architecture.
+ifneq ($(PREBUILT),1)
+$(EXT_LIBS): build/godot_libretro/%/libgodot_libretro.so: FORCE | submodules $$(stem_ready) $(BOOTLIN_VULKAN)/.headers
+	@set -e; $(call bootlin_compile,$(stem_arch),$(stem_variant))
+endif
+
+# An unknown TARGET only fails here (no rule for its file), not for other targets.
+extension: build/godot_libretro/$(ARCH)/$(patsubst template_%,%,$(TARGET))/libgodot_libretro.so ## Build the GDExtension for ARCH/TARGET.
+extension-variants: $(foreach v,debug release,build/godot_libretro/$(ARCH)/$(v)/libgodot_libretro.so) ## Extension for ARCH, debug and release.
+extension-all: $(EXT_LIBS) ## Extension for both arches, debug and release.
 
 # --- Test bits: the dummy core, the C callback probe and the placeholder ROM.
-# The dummy (tests/dummy) is built against the pinned libretro.h inside the
-# toolchain container of the host architecture, like the extension.
-$(DUMMY): tests/dummy/dummy_libretro.c $(LIBRETRO_H) | check-image-$(HOST_ARCH)
+# The dummy (tests/dummy) is built against the pinned libretro.h with the
+# toolchain of the architecture it targets, so `make dummy ARCH=arm64` gives a
+# copy that runs on the device.
+build/dummy/%/dummy_libretro.so: tests/dummy/dummy_libretro.c $(LIBRETRO_H) | $$(dummy_ready)
 	@mkdir -p $(@D)
-	$(call run_in,$(HOST_ARCH)) 'cc -O2 -Wall -Wextra -Wno-unused-function -fPIC -shared -I third_party/libretro-common/include tests/dummy/dummy_libretro.c -o $@'
+	$(call bootlin_cc,$*) -O2 -Wall -Wextra -Wno-unused-function -fPIC -shared -I third_party/libretro-common/include tests/dummy/dummy_libretro.c -o $@
 
 # The callback probe of the dummy core, no Godot involved: it drives the
 # Libretro API against the placeholder ROM and fails if the core stops
-# feeding frames.
+# feeding frames. It is a host program, so the host compiler builds it.
 $(HOST_PROBE): tests/libretro_probe.c $(LIBRETRO_H)
 	@mkdir -p $(@D)
 	cc -O2 -Wall -Wextra -I third_party/libretro-common/include $< -ldl -o $@
@@ -278,7 +228,7 @@ $(PROBE_ROM): FORCE
 	@mkdir -p $(@D)
 	@printf 'dummy rom' > $@
 
-dummy: $(DUMMY) ## Build the test dummy core for the host architecture.
+dummy: build/dummy/$(ARCH)/dummy_libretro.so ## Build the test dummy core for ARCH.
 test-probe: $(HOST_PROBE) $(DUMMY) $(PROBE_ROM) ## Build the dummy and drive it through the raw Libretro callbacks.
 	./$(HOST_PROBE) $(DUMMY) $(PROBE_ROM)
 
@@ -324,6 +274,7 @@ release: extension-all ## Build the full release matrix (no packaging).
 # before rebuilding: zip would otherwise update the old archive and keep
 # stale entries.
 $(DIST_ZIP): $(EXT_LIBS) LICENSE $(ADDON_GDEXTENSION)
+	@command -v zip >/dev/null || { echo "Missing zip." >&2; exit 1; }
 	@rm -f $@
 	@mkdir -p $(@D)
 	rm -rf build/package/addons
@@ -343,7 +294,7 @@ $(DIST_ZIP): $(EXT_LIBS) LICENSE $(ADDON_GDEXTENSION)
 		.bin/linux/template_release/x86_64/libgodot_libretro.so; do \
 		test -f build/package/addons/godot_libretro/$$f || { echo "extension package is missing $$f" >&2; exit 1; }; \
 	done
-	$(package_run) 'cd build/package && zip -9 -rX ../../$@ addons'
+	cd build/package && zip -9 -rX ../../$@ addons
 
 # The Godot harness (a host-architecture test against the dummy core) is an
 # order-only gate: the package is not built unless it passed, and it does
@@ -352,5 +303,5 @@ PACKAGE_GATE := $(if $(SKIP_GATES),,test-godot)
 
 package: $(DIST_ZIP) | $(PACKAGE_GATE) ## Verify, then the dist/ zip.
 
-clean: ## Remove build/ and dist/.
+clean: ## Remove build/ and dist/ (the toolchain cache in .cache/ stays).
 	rm -rf build dist
