@@ -110,11 +110,12 @@ package_run = $(call run_in,$(HOST_ARCH))
 #
 # The tarballs are relocatable and carry the target glibc, so the sysroot of
 # the toolchain is what fixes the baseline the artifacts require (2.35 here).
-# They live under build/ (wiped by make clean) and are pinned by the sha256
-# below instead of the checksum file next to them, which comes from the same
-# server as the tarball itself.
+# They live in .cache/ so that make clean (which removes build/ and dist/)
+# does not throw them away, and they are pinned by the sha256 below instead of
+# the checksum file next to them, which comes from the same server as the
+# tarball itself.
 BOOTLIN_VERSION := 2022.08-1
-BOOTLIN_ROOT := build/toolchains
+BOOTLIN_ROOT := .cache/toolchains
 BOOTLIN_BASE := https://toolchains.bootlin.com/downloads/releases/toolchains
 # Directory name, tool prefix and pinned sha256 per architecture, keyed by the
 # architecture names above (arm64 is aarch64 for Bootlin). Bumping
