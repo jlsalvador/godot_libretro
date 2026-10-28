@@ -58,6 +58,13 @@ endif
 # toolchain on every run.
 CCACHE ?= $(shell command -v ccache 2>/dev/null)
 CCACHE_DIR ?= $(ROOTDIR)/.ccache
+# A CCACHE that names a program nobody installed would only fail deep inside
+# the compiler invocation: refuse to start instead.
+ifneq ($(CCACHE),)
+ifeq ($(shell command -v $(firstword $(CCACHE))),)
+$(error Missing $(firstword $(CCACHE)) (install it or pass CCACHE= to disable it))
+endif
+endif
 export CCACHE
 export CCACHE_DIR
 
