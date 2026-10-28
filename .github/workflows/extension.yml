@@ -1,0 +1,93 @@
+# One architecture of the extension build: the toolchain image, the ccache, the
+# architecture check and the artifact. build.yml calls it once per
+# architecture, so a job that needs only one of them (the Godot harness runs
+# the x86_64 build) does not wait for the other one.
+#
+# Actions are pinned by commit SHA with the version in the trailing comment:
+# bump both together.
+name: extension
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: x86_64 or arm64.
+        required: true
+        type: string
+      platform:
+        description: OCI platform of the toolchain image, e.g. linux/amd64.
+        required: true
+        type: string
+      elf_arch:
+        description: Architecture name `file` prints for the built .so.
+        required: true
+        type: string
+      qemu:
+        description: Set up qemu, when the image is foreign to the runner.
+        required: false
+        type: boolean
+        default: false
+      runs_on:
+        description: Runner label.
+        required: false
+        type: string
+        default: ubuntu-24.04
+
+jobs:
+  extension:
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Initialize submodules (single level)
+        run: make submodules
+      - name: Restore the ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ inputs.arch }}-v1-extension
+          restore-keys: ccache-${{ inputs.arch }}-v1-extension
+      - name: Build the extension (debug and release)
+        uses: ./.github/actions/toolchain
+        with:
+          arch: ${{ inputs.arch }}
+          platform: ${{ inputs.platform }}
+          qemu: ${{ inputs.qemu }}
+          command: make IN_CONTAINER=1 extension-variants ARCH=${{ inputs.arch }}
+      # A run_attempt in the key keeps a re-run from saving over its own cache,
+      # and a failed compile still leaves a usable ccache. A cache that cannot
+      # be saved (a fork pull request, a cancelled run) must not fail the build.
+      - name: Save the ccache
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ inputs.arch }}-v1-extension-r${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Check the artifact architecture
+        run: |
+          # Both variants must be there: the package job assembles the zip
+          # from them and only checks the file names inside it.
+          for variant in debug release; do
+            so="build/godot_libretro/${{ inputs.arch }}/$variant/libgodot_libretro.so"
+            test -f "$so" || { echo "missing $so" >&2; exit 1; }
+          done
+          mapfile -d '' sos < <(find build/godot_libretro -name '*.so' -print0)
+          [ "${#sos[@]}" -gt 0 ] || { echo "No .so artifacts in build/godot_libretro" >&2; exit 1; }
+          for so in "${sos[@]}"; do
+            file -b "$so" | grep -q "${{ inputs.elf_arch }}" || { echo "$so is not ${{ inputs.elf_arch }}" >&2; exit 1; }
+          done
+      # A tarball, not the directory: it keeps the modification times that make
+      # compares in the package job (a plain artifact download resets them) and
+      # the build/ prefix of the paths.
+      - name: Pack the artifact
+        run: tar -cf "extension-${{ inputs.arch }}.tar" build/godot_libretro
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: extension-${{ inputs.arch }}
+          path: extension-${{ inputs.arch }}.tar
+          if-no-files-found: error
+          retention-days: 7

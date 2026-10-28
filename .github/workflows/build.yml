@@ -9,170 +9,128 @@
 # native arm64 runners instead (free for public repositories), set the
 # repository variable ARM_RUNNER to `ubuntu-24.04-arm`: qemu is then skipped.
 #
-# Flow: toolchain (build each image once, fill the layer cache) -> extension
-# (per architecture, in parallel) -> test-godot (headless Godot harness on
-# the x86_64 extension, against the dummy test core) -> package -> publish
-# (tags only).
-# Extension artifacts restore a per-job ccache (actions/cache/restore) and
-# save it under a per-run key (actions/cache/save); the jobs build disjoint
-# trees, so one key per job per architecture, and tag builds after the first
-# only compile the sources that changed.
+# Flow: toolchain (fill the docker layer cache of each architecture) -> the
+# extension build of each architecture (reusable workflow, in parallel) ->
+# test-godot (headless Godot harness on the x86_64 extension, against the dummy
+# test core) -> package -> publish (tags only; the release body is the tag's
+# own message when it has one).
+#
+# A release (a tag push or a manual run) builds both architectures. Branch
+# pushes and pull requests build x86_64 only and stop after the harness: the
+# arm64 build runs under qemu and nothing but a release needs it.
+#
+# Extension artifacts restore a per-job ccache (actions/cache/restore) and save
+# it under a per-run key (actions/cache/save); the builds are disjoint trees,
+# so one key per architecture, and a re-run of the same tag only compiles the
+# sources that changed.
+#
+# Actions are pinned by commit SHA with the version in the trailing comment:
+# bump both together.
 name: build
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 # Runs are keyed on the full ref, so each tag build is its own group and a
 # fresh tag push never cancels an in-flight tag run (a tag run publishes).
+# Every other run cancels a superseded run of the same ref.
 concurrency:
   group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 permissions:
   contents: read
 
 env:
-  IMAGE: godot-libretro-toolchain
-  IMAGE_TAG: "12"
-  # Where the toolchain image is defined; the build context is tools/ (as in
-  # `make toolchain-image`). Docker, unlike podman, does not look for a
-  # Containerfile by itself.
-  CONTAINERFILE: tools/Containerfile
   # Godot used by the headless harness; api_version in the Makefile is 4.7.
   GODOT_VERSION: 4.7.2-stable
   GODOT_SHA512: 9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65
 
-# Every job that runs the toolchain container does the same three things: set
-# up qemu (arm64 on an amd64 runner only), set up buildx, and load the image
-# from the layer cache that the `toolchain` job filled (a cache miss rebuilds
-# it). The container runs as the runner's own user: the repository is
-# bind-mounted, so files stay owned by the runner and git does not reject the
-# mounted submodule as "dubious ownership". The network is off, as in the
-# local flow.
 jobs:
+  # Fills the docker layer cache of the architecture each extension build
+  # needs; the builds then load the image from it (a cache miss rebuilds it).
+  # A release run asks for both architectures; a branch push or a pull request
+  # asks for x86_64 only, because the arm64 image exists to build arm64
+  # releases and runs under qemu.
   toolchain:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, arm64]
+        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["x86_64", "arm64"]' || '["x86_64"]') }}
     runs-on: ${{ matrix.arch == 'arm64' && vars.ARM_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: tools
-      - uses: docker/setup-qemu-action@v4.4.0
-        if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
-      - uses: docker/setup-buildx-action@v4.4.1
-      - name: Build the toolchain image and fill the cache
-        uses: docker/build-push-action@v7.4.0
+          # Nothing is compiled here: the Containerfile and the action that
+          # builds it are all this job needs.
+          sparse-checkout: |
+            tools
+            .github/actions
+      - uses: ./.github/actions/toolchain
         with:
-          context: tools
-          file: ${{ env.CONTAINERFILE }}
-          platforms: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
-          outputs: type=cacheonly
-          cache-from: type=gha,scope=toolchain-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=toolchain-${{ matrix.arch }}
+          arch: ${{ matrix.arch }}
+          platform: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
+          qemu: ${{ matrix.arch == 'arm64' && !vars.ARM_RUNNER }}
+          mode: cache
 
-  extension:
+  # One call per architecture instead of one matrix job: the Godot harness
+  # needs the x86_64 artifact and must not wait for the arm64 build, which is
+  # the slow one under qemu.
+  extension-x86_64:
     needs: toolchain
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86_64, arm64]
-    runs-on: ${{ matrix.arch == 'arm64' && vars.ARM_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 120
-    env:
-      ARCH: ${{ matrix.arch }}
-      PLATFORM: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
-      ELF_ARCH: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86-64' }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: false
-          persist-credentials: false
-      - name: Initialize submodules (single level)
-        run: make submodules
-      - uses: docker/setup-qemu-action@v4.4.0
-        if: matrix.arch == 'arm64' && !vars.ARM_RUNNER
-      - uses: docker/setup-buildx-action@v4.4.1
-      - name: Load the toolchain image
-        uses: docker/build-push-action@v7.4.0
-        with:
-          context: tools
-          file: ${{ env.CONTAINERFILE }}
-          platforms: ${{ matrix.arch == 'arm64' && 'linux/arm64' || 'linux/amd64' }}
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
-          load: true
-          cache-from: type=gha,scope=toolchain-${{ matrix.arch }}
-      - name: Restore the ccache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: .ccache
-          key: ccache-${{ matrix.arch }}-v1-extension
-          restore-keys: ccache-${{ matrix.arch }}-v1-extension
-      - name: Build the extension (debug and release)
-        run: |
-          docker run --rm --platform "$PLATFORM" --network none \
-            --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -v "$PWD":/work -w /work \
-            "$IMAGE:$IMAGE_TAG-$ARCH" \
-            make IN_CONTAINER=1 extension-variants ARCH="$ARCH"
-      - name: Save the ccache
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: .ccache
-          key: ccache-${{ matrix.arch }}-v1-extension-r${{ github.run_id }}
-      - name: Check the artifact architecture
-        run: |
-          mapfile -d '' sos < <(find build/godot_libretro -name '*.so' -print0)
-          [ "${#sos[@]}" -gt 0 ] || { echo "No .so artifacts in build/godot_libretro" >&2; exit 1; }
-          for so in "${sos[@]}"; do
-            file -b "$so" | grep -q "$ELF_ARCH" || { echo "$so is not $ELF_ARCH" >&2; exit 1; }
-          done
-      # A tarball, not the directory: it keeps the modification times that make
-      # compares in the package job (a plain artifact download resets them) and
-      # the build/ prefix of the paths.
-      - name: Pack the artifact
-        run: tar -cf "extension-$ARCH.tar" build/godot_libretro
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: extension-${{ matrix.arch }}
-          path: extension-${{ matrix.arch }}.tar
-          if-no-files-found: error
-          retention-days: 7
+    uses: ./.github/workflows/extension.yml
+    with:
+      arch: x86_64
+      platform: linux/amd64
+      elf_arch: x86-64
+
+  extension-arm64:
+    # Releases only: a branch push or a pull request stops after the harness.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: toolchain
+    uses: ./.github/workflows/extension.yml
+    with:
+      arch: arm64
+      platform: linux/arm64
+      elf_arch: aarch64
+      qemu: ${{ !vars.ARM_RUNNER }}
+      runs_on: ${{ vars.ARM_RUNNER || 'ubuntu-24.04' }}
 
   # The package job skips the Makefile's verification gate (SKIP_VERIFY=1)
   # because this job runs the Godot harness: it loads the x86_64 extension
   # against the dummy test core through the real dlmopen path, natively.
   test-godot:
-    needs: extension
+    needs: extension-x86_64
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PLATFORM: linux/amd64
       ARCH: x86_64
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
           persist-credentials: false
       - name: Initialize submodules (single level)
         run: make submodules
-      - uses: docker/setup-buildx-action@v4.4.1
-      - name: Load the host toolchain image
-        uses: docker/build-push-action@v7.4.0
+      # The dummy core compiles against the pinned libretro.h, so it builds in
+      # the toolchain container; the harness itself runs natively, as in the
+      # local flow.
+      - name: Build the dummy test core
+        uses: ./.github/actions/toolchain
         with:
-          context: tools
-          file: ${{ env.CONTAINERFILE }}
-          platforms: ${{ env.PLATFORM }}
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ env.ARCH }}
-          load: true
-          cache-from: type=gha,scope=toolchain-x86_64
-      - uses: actions/download-artifact@v8.0.2
+          arch: ${{ env.ARCH }}
+          platform: ${{ env.PLATFORM }}
+          command: make IN_CONTAINER=1 dummy
+      - name: Run the raw Libretro probe against the dummy
+        run: make IN_CONTAINER=1 test-probe
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: extension-x86_64
           path: artifacts
@@ -187,62 +145,51 @@ jobs:
           unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
           chmod +x "$RUNNER_TEMP/godot/${zip%.zip}"
           echo "GODOT=$RUNNER_TEMP/godot/${zip%.zip}" >> "$GITHUB_ENV"
-      # The dummy core compiles against the pinned libretro.h, so it builds
-      # in the toolchain container; the harness itself runs natively, as in
-      # the local flow. PREBUILT=1: the extension comes from the artifact.
-      - name: Build the dummy test core
-        run: |
-          docker run --rm --network none \
-            --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -v "$PWD":/work -w /work \
-            "$IMAGE:$IMAGE_TAG-$ARCH" \
-            make IN_CONTAINER=1 dummy
+      # PREBUILT=1: the extension comes from the artifact.
       - name: Run the Godot harness against the dummy core
         run: make IN_CONTAINER=1 PREBUILT=1 test-godot
 
   package:
-    needs: [extension, test-godot]
+    # Releases only, and the zip carries both architectures: a branch push or
+    # a pull request stops after the harness, which has already validated the
+    # x86_64 extension by then.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: [extension-x86_64, extension-arm64, test-godot]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PLATFORM: linux/amd64
       ARCH: x86_64
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v4.4.1
-      - name: Load the host toolchain image
-        uses: docker/build-push-action@v7.4.0
-        with:
-          context: tools
-          file: ${{ env.CONTAINERFILE }}
-          platforms: ${{ env.PLATFORM }}
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ env.ARCH }}
-          load: true
-          cache-from: type=gha,scope=toolchain-x86_64
-      - uses: actions/download-artifact@v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           merge-multiple: true
           path: artifacts
       - name: Unpack the artifacts
         run: for t in artifacts/*.tar; do tar -xf "$t"; done
+      - name: Compose the artifact version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
       # SKIP_VERIFY=1 also means PREBUILT: the unpacked binaries are used as
       # they are.
       - name: Package the extension zip
-        run: |
-          docker run --rm --platform "$PLATFORM" --network none \
-            --user "$(id -u):$(id -g)" -e HOME=/tmp \
-            -v "$PWD":/work -w /work \
-            "$IMAGE:$IMAGE_TAG-$ARCH" \
-            make IN_CONTAINER=1 package SKIP_VERIFY=1 VERSION="${GITHUB_REF_NAME//\//-}"
-      - uses: actions/upload-artifact@v7.0.2
+        uses: ./.github/actions/toolchain
+        with:
+          arch: ${{ env.ARCH }}
+          platform: ${{ env.PLATFORM }}
+          command: make IN_CONTAINER=1 package SKIP_VERIFY=1 VERSION=${{ steps.version.outputs.version }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package
           path: dist/*.zip
           if-no-files-found: error
           retention-days: 14
 
+  # Tags only: the release body is the tag's own message when the tag carries
+  # one (an annotated tag), and the one-line default otherwise.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: package
@@ -254,12 +201,31 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: package
           path: dist
-      - name: Upload release assets
+      - name: Resolve the release body
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --verify-tag --notes "Precompiled Linux matrix."
+          notes="$RUNNER_TEMP/release-notes.md"
+          tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type')
+          if [ "$tag_type" = "tag" ]; then
+            tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')
+            body=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.message // ""')
+            # An annotated tag with an empty message leaves the default.
+            if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+              printf '%s\n' "$body" > "$notes"
+            fi
+          fi
+          [ -s "$notes" ] || printf 'Precompiled Linux matrix.\n' > "$notes"
+          echo "RELEASE_NOTES=$notes" >> "$GITHUB_ENV"
+      - name: Publish the release
+        run: |
+          # The tag is the single source of truth for the body, so a re-run
+          # syncs an existing release instead of keeping a stale note.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RELEASE_NOTES"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --notes-file "$RELEASE_NOTES"
+          fi
           gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
