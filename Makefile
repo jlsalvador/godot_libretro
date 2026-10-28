@@ -106,6 +106,38 @@ check_image = actual=$$($(PODMAN) run --rm --platform linux/$(oci_$(1)) $(call i
 endif
 package_run = $(call run_in,$(HOST_ARCH))
 
+# --- Bootlin toolchains: the extension build without a container.
+#
+# The tarballs are relocatable and carry the target glibc, so the sysroot of
+# the toolchain is what fixes the baseline the artifacts require (2.35 here).
+# They live under build/ (wiped by make clean) and are pinned by the sha256
+# below instead of the checksum file next to them, which comes from the same
+# server as the tarball itself.
+BOOTLIN_VERSION := 2022.08-1
+BOOTLIN_ROOT := build/toolchains
+BOOTLIN_BASE := https://toolchains.bootlin.com/downloads/releases/toolchains
+# Directory name, tool prefix and pinned sha256 per architecture, keyed by the
+# architecture names above (arm64 is aarch64 for Bootlin). Bumping
+# BOOTLIN_VERSION means updating the four of each architecture.
+bootlin_url_arm64 := aarch64
+bootlin_dir_arm64 := aarch64--glibc--stable-$(BOOTLIN_VERSION)
+bootlin_triple_arm64 := aarch64-buildroot-linux-gnu
+bootlin_sha_arm64 := 844df3c99508030ee9cb1152cb182500bb9816ff01968f2e18591d51d766c9e7
+bootlin_url_x86_64 := x86-64
+bootlin_dir_x86_64 := x86-64--glibc--stable-$(BOOTLIN_VERSION)
+bootlin_triple_x86_64 := x86_64-buildroot-linux-gnu
+bootlin_sha_x86_64 := 861c1e8ad0a66e4c28e7a1f8319d68080ab0ff8d16a765e65540f1957203a190
+bootlin_dir = $(bootlin_dir_$(1))
+bootlin_triple = $(bootlin_triple_$(1))
+# Nested $(call) does not see the outer parameters in GNU make (the inner call
+# rebinds $(1)), so these expand the per-architecture variables directly.
+bootlin_ready = $(BOOTLIN_ROOT)/$(bootlin_dir_$(1))/.verified
+BOOTLIN_MARKERS := $(foreach a,$(ARCHES),$(call bootlin_ready,$(a)))
+# A cross toolchain has no Vulkan headers, and adding the host /usr/include
+# would shadow the target's glibc headers: only the Vulkan header folders
+# (vulkan/ and vk_video/) are exposed.
+BOOTLIN_VULKAN := $(BOOTLIN_ROOT)/vulkan-include
+
 # libretro.h (and libretro_vulkan.h) come from the pinned libretro-common
 # submodule: the single header source of the extension build, the C callback
 # probe and the test dummy.
@@ -126,7 +158,8 @@ TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
 .PHONY: FORCE all help release package clean \
 	submodules toolchain-image toolchain-images $(TOOLCHAIN_TARGETS) \
 	check-image-arch $(CHECK_IMAGE_TARGETS) \
-	extension extension-variants extension-all dummy \
+	extension extension-variants extension-all \
+	bootlin-toolchains bootlin-extension bootlin-extension-all dummy \
 	test-probe test-godot
 FORCE:
 
@@ -179,6 +212,50 @@ endif
 extension: build/godot_libretro/$(ARCH)/$(patsubst template_%,%,$(TARGET))/libgodot_libretro.so ## Build the GDExtension for ARCH/TARGET.
 extension-variants: $(foreach v,debug release,build/godot_libretro/$(ARCH)/$(v)/libgodot_libretro.so) ## Extension for ARCH, debug and release.
 extension-all: $(EXT_LIBS) ## Extension for both arches, debug and release.
+
+# --- Bootlin builds: nothing here starts a container, so the compilers and the
+# Vulkan headers come from the tarballs above and the host.
+#
+# $(1) = architecture, $(2) = variant (debug or release). One scons run per
+# architecture and variant; the toolchain of the target architecture is picked
+# by name, so a single line commands one build.
+bootlin_compile = echo '== $(1)/$(2)'; TOOLCHAIN='$(ROOTDIR)/$(BOOTLIN_ROOT)/$(bootlin_dir_$(1))' TOOLCHAIN_TRIPLE='$(bootlin_triple_$(1))' VULKAN_INCLUDE='$(ROOTDIR)/$(BOOTLIN_VULKAN)' scons -j$(JOBS) target=template_$(2) arch=$(1) api_version=4.7 debug_symbols=$(call ext_symbols,$(2));
+
+# $(1) = toolchain directory, $(2) = architecture of its URL, $(3) = sha256.
+define bootlin_fetch
+set -e; mkdir -p '$(ROOTDIR)/$(BOOTLIN_ROOT)/download'; \
+	dir='$(1)'; cd '$(ROOTDIR)/$(BOOTLIN_ROOT)/download'; \
+	curl -fsSL -o "$$dir.tar.bz2" '$(BOOTLIN_BASE)/$(2)/tarballs/'"$$dir.tar.bz2"; \
+	printf '%s  %s\n' '$(3)' "$$dir.tar.bz2" | sha256sum -c -; \
+	tar -xjf "$$dir.tar.bz2" -C ..; \
+	touch '$(ROOTDIR)/$(BOOTLIN_ROOT)/'"$$dir/.verified"
+endef
+
+$(call bootlin_ready,arm64):
+	@$(call bootlin_fetch,$(bootlin_dir_arm64),$(bootlin_url_arm64),$(bootlin_sha_arm64))
+
+$(call bootlin_ready,x86_64):
+	@$(call bootlin_fetch,$(bootlin_dir_x86_64),$(bootlin_url_x86_64),$(bootlin_sha_x86_64))
+
+# The Vulkan headers are the only host headers a cross build needs (the
+# extension never links libvulkan, it opens it at runtime), and the toolchain's
+# sysroot does not carry them. Only those two folders are exposed: adding the
+# host /usr/include would shadow the target's glibc headers.
+$(BOOTLIN_VULKAN)/.headers:
+	@set -e; for dir in vulkan vk_video; do \
+		test -d /usr/include/$$dir || { \
+			echo "Missing /usr/include/$$dir: install libvulkan-dev (only its headers are needed)." >&2; exit 1; }; \
+	done
+	@mkdir -p $(@D)
+	ln -sfn /usr/include/vulkan $(@D)/vulkan
+	ln -sfn /usr/include/vk_video $(@D)/vk_video
+	touch $@
+
+bootlin-toolchains: $(BOOTLIN_MARKERS) ## Download and verify the pinned cross toolchains.
+bootlin-extension: $(call bootlin_ready,$(ARCH)) $(BOOTLIN_VULKAN)/.headers ## Build ARCH/TARGET with the Bootlin toolchain, no container.
+	@set -e; $(call bootlin_compile,$(ARCH),$(patsubst template_%,%,$(TARGET)))
+bootlin-extension-all: $(BOOTLIN_MARKERS) $(BOOTLIN_VULKAN)/.headers ## Build both arches and variants with the Bootlin toolchains.
+	@set -e; $(foreach a,$(ARCHES),$(foreach v,debug release,$(call bootlin_compile,$(a),$(v))))
 
 # --- Test bits: the dummy core, the C callback probe and the placeholder ROM.
 # The dummy (tests/dummy) is built against the pinned libretro.h inside the
