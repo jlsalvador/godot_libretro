@@ -31,6 +31,11 @@ if toolchain:
 
 env = SConscript(os.path.join(godot_cpp_dir, "SConstruct"))
 
+# SCons runs every action with $ENV, and an Environment built by hand (here or
+# by godot-cpp, which then only fixes PATH) starts with none of it: a compiler
+# cache would see its built-in defaults instead of CCACHE_DIR and HOME.
+env["ENV"] = dict(os.environ)
+
 # An optional compiler cache in front of the tools the build chose, host or
 # toolchain. A toolchain restored from a cache has fresh mtimes, so the caller
 # sets CCACHE_COMPILERCHECK=content when it relies on one.
