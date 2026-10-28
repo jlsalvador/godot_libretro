@@ -42,17 +42,34 @@ func _run_test() -> void:
 	var start_time := Time.get_ticks_usec()
 	var video_frames := 0
 	var audio_frames := 0
+	var rumble_states: Array[Vector2] = []
 	for frame_index in range(120):
 		session.run_frame()
 		if session.get_video_frames_received() == frame_index + 1:
 			video_frames = frame_index + 1
 		audio_frames += session.get_audio_buffer().size()
+		if rumble_states.size() < 2:
+			rumble_states.append(session.get_rumble(0))
 	var elapsed_ms := float(Time.get_ticks_usec() - start_time) / 1000.0
 	print("dummy: %s %s, sample game 120 frames: video=%d audio=%d in %.0f ms" % [
 		session.get_core_name(), session.get_core_version(),
 		video_frames, audio_frames, elapsed_ms])
 	if video_frames < 120 and audio_frames < 120:
 		failures.append("dummy: expected 120 frames from the sample game, got %d video, %d audio" % [video_frames, audio_frames])
+	# Rumble: the dummy takes the interface and alternates the two motors once
+	# per run, so the pair must swap between frames with exactly one motor at
+	# full strength. get_rumble() is (strong, weak).
+	if not session.has_rumble_interface():
+		failures.append("dummy rumble: the core did not take the rumble interface")
+	elif rumble_states.size() == 2:
+		var first_rumble: Vector2 = rumble_states[0]
+		var second_rumble: Vector2 = rumble_states[1]
+		if first_rumble != Vector2(1.0, 0.0) and first_rumble != Vector2(0.0, 1.0):
+			failures.append("dummy rumble: expected one motor at full strength, got %s" % first_rumble)
+		if second_rumble.x != first_rumble.y or second_rumble.y != first_rumble.x:
+			failures.append("dummy rumble: strong and weak did not alternate independently (%s, %s)" % [first_rumble, second_rumble])
+	else:
+		failures.append("dummy rumble: no rumble states were sampled")
 	# Save states: the dummy's state is its counters and its first video
 	# byte carries them, so a restored state must reproduce the frame
 	# seen thirty runs after the capture.

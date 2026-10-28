@@ -1,7 +1,7 @@
 /* A minimal Libretro core that stands in for a real core in the tests: it
  * feeds one video frame and one audio batch per retro_run, keeps a counter
- * in SAVE_RAM, and makes the same optional environment requests a real
- * core makes (frame duping, system directory).
+ * in SAVE_RAM, alternates the two rumble motors, and makes the same optional
+ * environment requests a real core makes (frame duping, system directory).
  * It reads the ROM from game.path (the conformant path-only mode) and
  * accepts any non-empty file, so the tests need no real ROM content. */
 
@@ -36,6 +36,7 @@ static retro_input_state_t input_state;
 
 static bool can_dupe;
 static struct retro_log_callback log_cb;
+static struct retro_rumble_interface rumble;
 static uint8_t save_ram[SAVE_SIZE];
 static uint64_t run_frames;
 
@@ -74,7 +75,9 @@ void retro_init(void) {
   environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
   environment(RETRO_ENVIRONMENT_GET_CAN_DUPE, &can_dupe);
   environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log_cb);
-
+  if (environment(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble) &&
+      rumble.set_rumble_state)
+    log_info("rumble interface taken");
   uint64_t quirks = 0;
   if (environment(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks))
     log_info("serialization quirks acknowledged");
@@ -125,6 +128,13 @@ void retro_run(void) {
   static int16_t audio[AUDIO_FRAMES_PER_RUN * 2];
   uint64_t counter;
   memcpy(&counter, save_ram, sizeof(counter));
+  /* Alternate the motors every frame, so the frontend has to report strong
+     and weak independently: the counter parity makes the order checkable. */
+  if (rumble.set_rumble_state) {
+    const bool strong_on = (counter & 1u) != 0;
+    rumble.set_rumble_state(0, RETRO_RUMBLE_STRONG, strong_on ? 0xFFFF : 0);
+    rumble.set_rumble_state(0, RETRO_RUMBLE_WEAK, strong_on ? 0 : 0xFFFF);
+  }
   /* The counter rides in the blue bits, so a test can see the frame change
      and a save-state round trip reproduce it. */
   const uint16_t color = (uint16_t)(0x7C00u | (counter & 0x1Fu));

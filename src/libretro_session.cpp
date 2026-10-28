@@ -34,6 +34,26 @@ public:
 	}
 };
 
+// Process-wide cache of per-core linker namespaces. glibc never reclaims
+// static TLS blocks, so a fresh dlmopen per session exhausts them after a
+// handful of loads; namespaces are therefore reused once their session ends (a
+// second concurrent session of the same core still gets a fresh namespace for
+// isolation).
+//
+// The cache is deliberately never destroyed: the cached namespaces outlive
+// static teardown, and a session can be destroyed after other static objects
+// are gone. The mutex covers every session, so two sessions loading or
+// stopping on different threads cannot corrupt it.
+struct NamespaceCache {
+	std::mutex mutex;
+	std::map<std::string, std::vector<void *>> entries;
+};
+
+NamespaceCache &namespace_cache() {
+	static NamespaceCache *cache = new NamespaceCache();
+	return *cache;
+}
+
 template <typename Function>
 bool resolve_symbol(void *p_handle, Function &r_function, const char *p_name, std::string &r_error) {
 	r_function = reinterpret_cast<Function>(dlsym(p_handle, p_name));
@@ -98,13 +118,13 @@ LibretroSession::~LibretroSession() {
 
 void LibretroSession::_release_namespace() {
 	if (core_handle && !core_path_key.empty()) {
-		free_namespaces[core_path_key].push_back(core_handle);
+		NamespaceCache &cache = namespace_cache();
+		std::lock_guard<std::mutex> lock(cache.mutex);
+		cache.entries[core_path_key].push_back(core_handle);
 	}
 	core_handle = nullptr;
 	core_path_key.clear();
 }
-
-std::map<std::string, std::vector<void *>> LibretroSession::free_namespaces;
 
 bool LibretroSession::_resolve_symbols() {
 	const bool required_symbols = resolve_symbol(core_handle, api_version, "retro_api_version", last_error) &&
@@ -131,12 +151,19 @@ bool LibretroSession::_resolve_symbols() {
 }
 
 void *LibretroSession::_acquire_namespace(const std::string &p_path, std::string &r_error) {
-	auto cached = free_namespaces.find(p_path);
-	if (cached != free_namespaces.end() && !cached->second.empty()) {
-		void *handle = cached->second.back();
-		cached->second.pop_back();
-		return handle;
+	NamespaceCache &cache = namespace_cache();
+	{
+		std::lock_guard<std::mutex> lock(cache.mutex);
+		auto cached = cache.entries.find(p_path);
+		if (cached != cache.entries.end() && !cached->second.empty()) {
+			void *handle = cached->second.back();
+			cached->second.pop_back();
+			return handle;
+		}
 	}
+	// The load itself runs outside the cache lock: it is slow, and a second
+	// thread asking for the same core at the same time may simply open another
+	// namespace, which the cache reuses later.
 #if defined(__GLIBC__)
 	// Each core gets its own ELF namespace so core-global state stays
 	// independent across concurrent sessions.
@@ -395,6 +422,9 @@ void LibretroSession::stop() {
 		video_rgba.clear();
 		audio_samples.clear();
 	}
+	video_width = 0;
+	video_height = 0;
+	video_frames_received = 0;
 	rom_data.clear();
 	rom_path.clear();
 	core_id.clear();
@@ -403,7 +433,10 @@ void LibretroSession::stop() {
 	// configuration survives: the directory overrides and the core option
 	// overrides. last_error is kept as the diagnostic of why the session
 	// ended; load_core() and load_game() clear it when they start.
-	core_option_defaults.clear();
+	{
+		std::lock_guard<std::mutex> lock(options_mutex);
+		core_option_defaults.clear();
+	}
 	core_option_value.clear();
 	core_options_dirty = false;
 	serialization_quirks = 0;
@@ -414,9 +447,6 @@ void LibretroSession::stop() {
 	hw_readback_error.clear();
 	pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 	rumble_interface_taken = false;
-	video_width = 0;
-	video_height = 0;
-	video_frames_received = 0;
 	frames_per_second = 60.0;
 	audio_sample_rate = 48000.0;
 	save_directory_core.clear();
@@ -424,7 +454,10 @@ void LibretroSession::stop() {
 	frames_since_save = 0;
 	port_buttons = {};
 	port_axes = {};
-	port_rumble = {};
+	{
+		std::lock_guard<std::mutex> lock(rumble_mutex);
+		port_rumble = {};
+	}
 	get_memory_data = nullptr;
 	get_memory_size = nullptr;
 	serialize_size = nullptr;
@@ -645,6 +678,7 @@ Vector2 LibretroSession::get_rumble(int p_port) const {
 	if (p_port < 0 || p_port >= static_cast<int>(MAX_PLAYERS)) {
 		return Vector2();
 	}
+	std::lock_guard<std::mutex> lock(rumble_mutex);
 	return Vector2(port_rumble[p_port][0], port_rumble[p_port][1]);
 }
 
@@ -658,6 +692,7 @@ void LibretroSession::set_core_option(const String &p_key, const String &p_value
 	if (key.empty()) {
 		return;
 	}
+	std::lock_guard<std::mutex> lock(options_mutex);
 	if (value.empty()) {
 		if (core_option_overrides.erase(key) > 0) {
 			core_options_dirty = true;
@@ -674,6 +709,7 @@ void LibretroSession::set_core_option(const String &p_key, const String &p_value
 
 String LibretroSession::get_core_option(const String &p_key) const {
 	const std::string key = p_key.utf8().get_data();
+	std::lock_guard<std::mutex> lock(options_mutex);
 	const auto override = core_option_overrides.find(key);
 	if (override != core_option_overrides.end()) {
 		return String(override->second.c_str());
@@ -703,6 +739,7 @@ void LibretroSession::_store_core_option_variable(const retro_variable *p_variab
 	first.erase(0, first.find_first_not_of(' '));
 	first.erase(first.find_last_not_of(' ') + 1);
 	if (!first.empty()) {
+		std::lock_guard<std::mutex> lock(options_mutex);
 		core_option_defaults[p_variable->key] = first;
 	}
 }
@@ -748,6 +785,7 @@ bool LibretroSession::_set_rumble_state(unsigned p_port, retro_rumble_effect p_e
 	if (active_session == nullptr || p_port >= MAX_PLAYERS || (p_effect != RETRO_RUMBLE_STRONG && p_effect != RETRO_RUMBLE_WEAK)) {
 		return false;
 	}
+	std::lock_guard<std::mutex> lock(active_session->rumble_mutex);
 	active_session->port_rumble[p_port][p_effect == RETRO_RUMBLE_STRONG ? 0 : 1] = static_cast<float>(p_strength) / 65535.0f;
 	return true;
 }
@@ -828,15 +866,18 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 				return false;
 			}
 			const std::string key = variable->key;
-			const auto override = active_session->core_option_overrides.find(key);
-			if (override != active_session->core_option_overrides.end()) {
-				active_session->core_option_value = override->second;
-			} else {
-				const auto fallback = active_session->core_option_defaults.find(key);
-				if (fallback == active_session->core_option_defaults.end()) {
-					return false;
+			{
+				std::lock_guard<std::mutex> lock(active_session->options_mutex);
+				const auto override = active_session->core_option_overrides.find(key);
+				if (override != active_session->core_option_overrides.end()) {
+					active_session->core_option_value = override->second;
+				} else {
+					const auto fallback = active_session->core_option_defaults.find(key);
+					if (fallback == active_session->core_option_defaults.end()) {
+						return false;
+					}
+					active_session->core_option_value = fallback->second;
 				}
-				active_session->core_option_value = fallback->second;
 			}
 			// One buffer owned by the session: the pointer stays valid until
 			// the next GET_VARIABLE instead of dangling into a cleared map.

@@ -8,6 +8,7 @@
 
 #include <godot_cpp/variant/vector2.hpp>
 #include <array>
+#include <atomic>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -53,13 +54,8 @@ class LibretroSession : public RefCounted {
 	bool core_initialized = false;
 	std::string core_path_key;
 
-	// Process-wide cache of per-core linker namespaces. glibc never
-	// reclaims static TLS blocks, so a fresh dlmopen per session exhausts
-	// them after a handful of loads; namespaces are therefore reused once
-	// their session ends (a second concurrent session of the same core
-	// still gets a fresh namespace for isolation).
-	static std::map<std::string, std::vector<void *>> free_namespaces;
-
+	// The namespace cache lives in the translation unit: it outlives every
+	// session, so it is deliberately never destroyed.
 	bool game_loaded = false;
 	// The content is copied into memory only for cores that do not declare
 	// need_fullpath. Past the cap the load falls back to the path, so the cap
@@ -119,14 +115,22 @@ class LibretroSession : public RefCounted {
 	// Per-port rumble strength (0..1) set by the core through the rumble
 	// interface: 0 = strong (large) motor, 1 = weak (small) motor.
 	std::array<std::array<float, 2>, MAX_PLAYERS> port_rumble = {};
-	bool rumble_interface_taken = false;
+	// Separate from output_mutex: a rumble read should not wait behind a frame
+	// conversion, and the Vulkan readback holds that lock for a whole copy.
+	mutable std::mutex rumble_mutex;
+	// Written from the core's thread when it takes the interface, read from
+	// the caller's.
+	std::atomic<bool> rumble_interface_taken = false;
+	// Option maps shared with the core: the caller writes them through
+	// set_core_option(), the core reads them from GET_VARIABLE while it runs.
+	mutable std::mutex options_mutex;
 	std::map<std::string, std::string> core_option_defaults;
 	std::map<std::string, std::string> core_option_overrides;
 	// Value last resolved for GET_VARIABLE: a session-owned buffer, so the
 	// pointer handed to the core outlives later option changes.
 	std::string core_option_value;
 	// Set by set_core_option(), consumed by GET_VARIABLE_UPDATE.
-	bool core_options_dirty = false;
+	std::atomic<bool> core_options_dirty = false;
 	// Quirks the core declared, kept to know how strict a state must be.
 	uint64_t serialization_quirks = 0;
 	// Tail of the core's log, as formatted by its log interface. The core
@@ -134,9 +138,14 @@ class LibretroSession : public RefCounted {
 	// (a BIOS lookup report, a load error) without a live console.
 	static constexpr size_t CORE_LOG_LINES_MAX = 1024;
 	std::deque<std::string> core_log_lines;
-	unsigned video_width = 0;
-	unsigned video_height = 0;
-	unsigned video_frames_received = 0;
+	// Geometry and frame counter of the last presented frame: atomic scalars
+	// rather than output_mutex, so a caller polling them never waits behind a
+	// frame conversion or a slow Vulkan readback. Each read is coherent on its
+	// own; a width/height pair can still straddle two frames, exactly as it can
+	// between two getter calls.
+	std::atomic<unsigned> video_width = 0;
+	std::atomic<unsigned> video_height = 0;
+	std::atomic<unsigned> video_frames_received = 0;
 	double frames_per_second = 60.0;
 	double audio_sample_rate = 48000.0;
 	unsigned frames_since_save = 0;
