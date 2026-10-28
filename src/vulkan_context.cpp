@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <dlfcn.h>
+#include <utility>
 
 namespace godot {
 
@@ -38,7 +39,7 @@ bool VulkanContext::create_frontend_instance(const retro_hw_render_context_negot
 	}
 	VkApplicationInfo default_app = {};
 	default_app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-	default_app.pApplicationName = "RoomVR";
+	default_app.pApplicationName = "godot_libretro";
 	default_app.apiVersion = VK_API_VERSION_1_1;
 	VkApplicationInfo app_info = default_app;
 	if (negotiation && negotiation->get_application_info) {
@@ -114,6 +115,7 @@ bool VulkanContext::create_helpers(std::string &r_error) {
 	pool_info.queueFamilyIndex = queue_family_index;
 	if (pfnCreateCommandPool(device, &pool_info, nullptr, &command_pool) != VK_SUCCESS) {
 		r_error = "Could not create Vulkan command pool.";
+		destroy_helpers();
 		return false;
 	}
 	VkCommandBufferAllocateInfo alloc_info = {};
@@ -123,12 +125,14 @@ bool VulkanContext::create_helpers(std::string &r_error) {
 	alloc_info.commandBufferCount = 1;
 	if (pfnAllocateCommandBuffers(device, &alloc_info, &command_buffer) != VK_SUCCESS) {
 		r_error = "Could not allocate Vulkan command buffer.";
+		destroy_helpers();
 		return false;
 	}
 	VkFenceCreateInfo fence_info = {};
 	fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	if (pfnCreateFence(device, &fence_info, nullptr, &copy_fence) != VK_SUCCESS) {
 		r_error = "Could not create Vulkan copy fence.";
+		destroy_helpers();
 		return false;
 	}
 	return true;
@@ -179,6 +183,7 @@ bool VulkanContext::ensure_staging(VkDeviceSize size, std::string &r_error) {
 	buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	if (pfnCreateBuffer(device, &buffer_info, nullptr, &staging_buffer) != VK_SUCCESS) {
 		r_error = "Could not create Vulkan staging buffer.";
+		destroy_helpers();
 		return false;
 	}
 	VkMemoryRequirements requirements = {};
@@ -196,6 +201,7 @@ bool VulkanContext::ensure_staging(VkDeviceSize size, std::string &r_error) {
 	}
 	if (memory_type == UINT32_MAX) {
 		r_error = "No host-visible coherent Vulkan memory type.";
+		destroy_helpers();
 		return false;
 	}
 	VkMemoryAllocateInfo alloc_info = {};
@@ -204,10 +210,12 @@ bool VulkanContext::ensure_staging(VkDeviceSize size, std::string &r_error) {
 	alloc_info.memoryTypeIndex = memory_type;
 	if (pfnAllocateMemory(device, &alloc_info, nullptr, &staging_memory) != VK_SUCCESS) {
 		r_error = "Could not allocate Vulkan staging memory.";
+		destroy_helpers();
 		return false;
 	}
 	if (pfnBindBufferMemory(device, staging_buffer, staging_memory, 0) != VK_SUCCESS) {
 		r_error = "Could not bind Vulkan staging memory.";
+		destroy_helpers();
 		return false;
 	}
 	staging_size = size;
@@ -312,14 +320,37 @@ bool VulkanContext::readback_frame(unsigned width, unsigned height, std::vector<
 	}
 	VkImage image = VK_NULL_HANDLE;
 	VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	std::vector<VkSemaphore> wait_semaphores;
+	bool swizzle_bgra = false;
 	{
 		std::lock_guard<std::mutex> lock(image_mutex);
 		image = presented_image;
 		layout = presented_layout;
+		if (image == VK_NULL_HANDLE || layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+			return false;
+		}
+		// The frame is handed to Godot as R8G8B8A8. A view format with the
+		// other channel order is swizzled below; an unknown one is refused
+		// instead of producing plausible but wrong colors.
+		switch (presented_format) {
+			case VK_FORMAT_R8G8B8A8_UNORM:
+			case VK_FORMAT_R8G8B8A8_SRGB:
+				break;
+			case VK_FORMAT_B8G8R8A8_UNORM:
+			case VK_FORMAT_B8G8R8A8_SRGB:
+				swizzle_bgra = true;
+				break;
+			default:
+				r_error = "Unsupported Vulkan frame format: " + std::to_string(static_cast<int>(presented_format)) + ".";
+				return false;
+		}
+		// Waiting on a semaphore consumes it, so a frame's list is taken
+		// exactly once: a second readback of the same frame waits on nothing.
+		wait_semaphores.swap(presented_semaphores);
 	}
-	if (image == VK_NULL_HANDLE || layout == VK_IMAGE_LAYOUT_UNDEFINED) {
-		return false;
-	}
+	// The presented image extent is not part of the Libretro interface, so the
+	// size the core reported to the video callback is the only source; a core
+	// that misreports it is a core bug this cannot detect.
 	const VkDeviceSize byte_size = static_cast<VkDeviceSize>(width) * height * 4;
 	std::lock_guard<std::mutex> lock(queue_mutex);
 	if (!ensure_staging(byte_size, r_error)) {
@@ -368,10 +399,16 @@ bool VulkanContext::readback_frame(unsigned width, unsigned height, std::vector<
 		r_error = "Could not record Vulkan copy commands.";
 		return false;
 	}
+	// The copy waits for the semaphores the core handed over with the image,
+	// on the same queue it renders to, so the bytes read below are complete.
+	VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	VkSubmitInfo submit_info = {};
 	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submit_info.commandBufferCount = 1;
 	submit_info.pCommandBuffers = &command_buffer;
+	submit_info.waitSemaphoreCount = static_cast<uint32_t>(wait_semaphores.size());
+	submit_info.pWaitSemaphores = wait_semaphores.empty() ? nullptr : wait_semaphores.data();
+	submit_info.pWaitDstStageMask = wait_semaphores.empty() ? nullptr : &wait_stage;
 	if (pfnQueueSubmit(queue, 1, &submit_info, copy_fence) != VK_SUCCESS) {
 		r_error = "Could not submit Vulkan copy commands.";
 		return false;
@@ -388,6 +425,11 @@ bool VulkanContext::readback_frame(unsigned width, unsigned height, std::vector<
 	r_rgba.resize(static_cast<size_t>(byte_size));
 	std::memcpy(r_rgba.data(), mapped, static_cast<size_t>(byte_size));
 	pfnUnmapMemory(device, staging_memory);
+	if (swizzle_bgra) {
+		for (size_t pixel = 0; pixel + 3 < r_rgba.size(); pixel += 4) {
+			std::swap(r_rgba[pixel], r_rgba[pixel + 2]);
+		}
+	}
 	return true;
 }
 
@@ -411,17 +453,49 @@ void VulkanContext::shutdown() {
 	physical_gpu = VK_NULL_HANDLE;
 	frontend_context = {};
 	std::memset(&hw_interface, 0, sizeof(hw_interface));
-	vkGetInstanceProcAddr = nullptr;
-	pfnGetDeviceProcAddr = nullptr;
 	if (loader_handle) {
 		dlclose(loader_handle);
 		loader_handle = nullptr;
 	}
+	// The loader is gone: its entry points must not survive it.
+	clear_entry_points();
 	{
 		std::lock_guard<std::mutex> lock(image_mutex);
 		presented_image = VK_NULL_HANDLE;
 		presented_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		presented_format = VK_FORMAT_UNDEFINED;
+		presented_semaphores.clear();
 	}
+}
+
+void VulkanContext::clear_entry_points() {
+	vkGetInstanceProcAddr = nullptr;
+	pfnDestroyInstance = nullptr;
+	pfnEnumeratePhysicalDevices = nullptr;
+	pfnGetPhysicalDeviceQueueFamilyProperties = nullptr;
+	pfnGetPhysicalDeviceMemoryProperties = nullptr;
+	pfnGetDeviceProcAddr = nullptr;
+	pfnCreateCommandPool = nullptr;
+	pfnDestroyCommandPool = nullptr;
+	pfnAllocateCommandBuffers = nullptr;
+	pfnBeginCommandBuffer = nullptr;
+	pfnEndCommandBuffer = nullptr;
+	pfnCmdPipelineBarrier = nullptr;
+	pfnCmdCopyImageToBuffer = nullptr;
+	pfnCreateBuffer = nullptr;
+	pfnDestroyBuffer = nullptr;
+	pfnGetBufferMemoryRequirements = nullptr;
+	pfnAllocateMemory = nullptr;
+	pfnFreeMemory = nullptr;
+	pfnBindBufferMemory = nullptr;
+	pfnMapMemory = nullptr;
+	pfnUnmapMemory = nullptr;
+	pfnCreateFence = nullptr;
+	pfnDestroyFence = nullptr;
+	pfnWaitForFences = nullptr;
+	pfnResetFences = nullptr;
+	pfnQueueSubmit = nullptr;
+	pfnQueueWaitIdle = nullptr;
 }
 
 uint32_t VulkanContext::get_sync_index_callback(void *handle) {
@@ -465,17 +539,23 @@ void VulkanContext::unlock_queue_callback(void *handle) {
 
 void VulkanContext::set_image_callback(void *handle, const struct retro_vulkan_image *image,
 		uint32_t num_semaphores, const VkSemaphore *semaphores, uint32_t src_queue_family) {
-	(void)num_semaphores;
-	(void)semaphores;
 	(void)src_queue_family;
 	auto *context = static_cast<VulkanContext *>(handle);
 	if (!context || !image) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(context->image_mutex);
-	// VkImageViewCreateInfo carries the source VkImage.
+	// VkImageViewCreateInfo carries the source VkImage and the view format,
+	// which is what the readback converts from.
 	context->presented_image = image->create_info.image;
 	context->presented_layout = image->image_layout;
+	context->presented_format = image->create_info.format;
+	context->presented_semaphores.clear();
+	if (semaphores && num_semaphores > 0) {
+		// Kept so the readback submission can wait on the core's rendering
+		// instead of copying a frame that is still in flight.
+		context->presented_semaphores.assign(semaphores, semaphores + num_semaphores);
+	}
 }
 
 } // namespace godot

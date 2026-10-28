@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <deque>
 #include <map>
-#include <set>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -58,7 +58,15 @@ class LibretroSession : public RefCounted {
 	// them after a handful of loads; namespaces are therefore reused once
 	// their session ends (a second concurrent session of the same core
 	// still gets a fresh namespace for isolation).
-	static std::map<std::string, std::vector<void *>> free_namespaces;	bool game_loaded = false;
+	static std::map<std::string, std::vector<void *>> free_namespaces;
+
+	bool game_loaded = false;
+	// The content is copied into memory only for cores that do not declare
+	// need_fullpath. Past the cap the load falls back to the path, so the cap
+	// bounds the allocation instead of rejecting a load.
+	static constexpr uint64_t ROM_DATA_CAP = 64 * 1024 * 1024;
+	// A save state larger than this is never captured nor handed to a core.
+	static constexpr uint64_t SAVE_STATE_CAP = 1024 * 1024 * 1024;
 	retro_pixel_format pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 	RetroApiVersion api_version = nullptr;
 	RetroSetEnvironment set_environment = nullptr;
@@ -94,6 +102,12 @@ class LibretroSession : public RefCounted {
 	std::string core_name;
 	std::string core_version;
 	std::string core_extensions;
+	// retro_system_info.need_fullpath: when false, the API requires the
+	// frontend to hand the content over in retro_game_info.data.
+	bool core_needs_fullpath = false;
+	// Guards the two output buffers: one thread may drive the session while
+	// the caller reads the last frame or audio chunk from another.
+	mutable std::mutex output_mutex;
 	std::vector<uint8_t> video_rgba;
 	std::vector<int16_t> audio_samples;
 	static constexpr unsigned MAX_PLAYERS = 4;
@@ -108,7 +122,13 @@ class LibretroSession : public RefCounted {
 	bool rumble_interface_taken = false;
 	std::map<std::string, std::string> core_option_defaults;
 	std::map<std::string, std::string> core_option_overrides;
-	std::map<std::string, std::string> core_option_resolved;
+	// Value last resolved for GET_VARIABLE: a session-owned buffer, so the
+	// pointer handed to the core outlives later option changes.
+	std::string core_option_value;
+	// Set by set_core_option(), consumed by GET_VARIABLE_UPDATE.
+	bool core_options_dirty = false;
+	// Quirks the core declared, kept to know how strict a state must be.
+	uint64_t serialization_quirks = 0;
 	// Tail of the core's log, as formatted by its log interface. The core
 	// logs through a C varargs callback; the lines are kept for inspection
 	// (a BIOS lookup report, a load error) without a live console.
@@ -128,6 +148,10 @@ class LibretroSession : public RefCounted {
 	retro_hw_render_context_negotiation_interface_vulkan hw_negotiation = {};
 	bool hw_render_requested = false;
 	bool has_hw_negotiation = false;
+	// True between a context_reset this session ran and its context_destroy.
+	bool hw_context_started = false;
+	// Last readback failure, reported once instead of every frame.
+	std::string hw_readback_error;
 
 	static bool _environment_callback(unsigned command, void *data);
 	static void _log_callback(retro_log_level level, const char *format, ...);
@@ -141,6 +165,7 @@ class LibretroSession : public RefCounted {
 	bool _resolve_symbols();
 	void *_acquire_namespace(const std::string &path, std::string &error);
 	void _release_namespace();
+	bool _configure_directories();
 	void _store_core_option_variable(const retro_variable *variable);
 	void _load_save_ram();
 	void _save_save_ram();

@@ -3,9 +3,9 @@ extends SceneTree
 
 # Drives the test dummy (tests/dummy/dummy_libretro.c) through the
 # extension: the same session paths a real core exercises, minus real
-# emulation. The dummy requests frame duping, a system-directory BIOS
-# fixture lookup and a Vulkan device, and the assertions below cover each
-# of those paths plus the save-RAM sidecar and save states.
+# emulation. The dummy requests frame duping and a system-directory BIOS
+# fixture lookup, and the assertions below cover those paths plus the save-RAM
+# sidecar and save states.
 
 func _initialize() -> void:
 	call_deferred("_run_test")
@@ -117,7 +117,8 @@ func _run_test() -> void:
 	var bios_session := LibretroSession.new()
 	var bios_dir := ProjectSettings.globalize_path("res://bios")
 	DirAccess.make_dir_recursive_absolute(bios_dir)
-	_write_bios_fixture(bios_dir.path_join("sample.bios"))
+	if not _write_bios_fixture(bios_dir.path_join("sample.bios")):
+		failures.append("dummy bios: could not write the BIOS fixture")
 	bios_session.set_system_directory(bios_dir)
 	if not bios_session.load_core(ProjectSettings.globalize_path(core_path)):
 		failures.append("dummy bios: failed to load: %s" % bios_session.get_last_error())
@@ -138,22 +139,23 @@ func _run_test() -> void:
 				failures.append("dummy bios: no BIOS fixture found in the system directory")
 		bios_session.stop()
 
-	# Large ROMs: path-only cores receive the path only (a 67 MiB file must
-	# reach the core); the extension's 64 MiB data cap stays a load error
-	# for the data-reading cores, not a rejection of a path-only load.
+	# Large ROMs: the dummy declares need_fullpath, so it gets the path only
+	# and a 67 MiB ROM must still reach it; the 64 MiB content cap applies to
+	# cores that do not declare it and never becomes a load error by itself.
 	var big_path := ProjectSettings.globalize_path("res://build/big_sparse.img")
 	var big_file := FileAccess.open(big_path, FileAccess.WRITE)
-	big_file.seek(67 * 1024 * 1024 - 1)
-	big_file.store_8(0)
-	big_file.close()
-	var big_session := LibretroSession.new()
-	big_session.set_save_directory(ProjectSettings.globalize_path("res://build/core_load_saves"))
-	if not big_session.load_core(ProjectSettings.globalize_path(core_path)):
-		failures.append("dummy large: failed to load: %s" % big_session.get_last_error())
+	if big_file == null:
+		failures.append("dummy large: could not create the large ROM file")
 	else:
-		big_session.load_game(big_path)
-		if big_session.get_last_error().contains("64 MiB"):
-			failures.append("dummy large: the path-only load rejected a large ROM: %s" % big_session.get_last_error())
+		big_file.seek(67 * 1024 * 1024 - 1)
+		big_file.store_8(0)
+		big_file.close()
+		var big_session := LibretroSession.new()
+		big_session.set_save_directory(ProjectSettings.globalize_path("res://build/core_load_saves"))
+		if not big_session.load_core(ProjectSettings.globalize_path(core_path)):
+			failures.append("dummy large: failed to load: %s" % big_session.get_last_error())
+		elif not big_session.load_game(big_path):
+			failures.append("dummy large: the path-only load failed: %s" % big_session.get_last_error())
 		big_session.stop()
 
 	if failures.is_empty():
@@ -166,10 +168,13 @@ func _run_test() -> void:
 
 
 # The fixture is a test stand-in for a BIOS file: the dummy only stats it.
-func _write_bios_fixture(path: String) -> void:
+func _write_bios_fixture(path: String) -> bool:
 	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
 	file.store_8(0x00)
 	file.store_8(0x08)
 	file.store_8(0x3C)
 	file.store_8(0x3F)
 	file.close()
+	return true

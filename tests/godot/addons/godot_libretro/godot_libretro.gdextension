@@ -2,7 +2,10 @@
 
 entry_symbol = "godot_libretro_init"
 compatibility_minimum = "4.7"
-reloadable = true
+; Hot reloading cannot be safe here: the session keeps per-core dlmopen
+; namespaces and cached core handles in the library's static data, so an
+; editor unload would leave core callbacks pointing into a released .so.
+reloadable = false
 
 [libraries]
 

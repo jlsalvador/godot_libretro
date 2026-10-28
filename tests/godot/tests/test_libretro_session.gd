@@ -32,14 +32,14 @@ func _run_test() -> void:
 		session.stop()
 		quit(1)
 		return
-	session.set_core_option("roomvr_test_option", "roomvr_test_value")
-	if session.get_core_option("roomvr_test_option") != "roomvr_test_value":
+	session.set_core_option("godot_libretro_test_option", "godot_libretro_test_value")
+	if session.get_core_option("godot_libretro_test_option") != "godot_libretro_test_value":
 		push_error("Core option overrides should round-trip through the session.")
 		session.stop()
 		quit(1)
 		return
-	session.set_core_option("roomvr_test_option", "")
-	if session.get_core_option("roomvr_test_option") != "":
+	session.set_core_option("godot_libretro_test_option", "")
+	if session.get_core_option("godot_libretro_test_option") != "":
 		push_error("Clearing a core option override should fall back to empty.")
 		session.stop()
 		quit(1)
@@ -48,11 +48,10 @@ func _run_test() -> void:
 	var stream := AudioStreamGenerator.new()
 	stream.mix_rate = session.get_audio_sample_rate()
 	stream.buffer_length = 0.25
-	var audio_player := AudioStreamPlayer.new()
-	audio_player.stream = stream
-	root.add_child(audio_player)
-	audio_player.play()
-	var audio_playback := audio_player.get_stream_playback() as AudioStreamGeneratorPlayback
+	# The playback is instantiated directly instead of through an
+	# AudioStreamPlayer: the player registers it on the audio server, whose
+	# teardown runs after the last script, so the playback outlived the test.
+	var audio_playback := stream.instantiate_playback() as AudioStreamGeneratorPlayback
 	var audio_frames := 0
 	var audio_chunks_pushed := 0
 	var texture: ImageTexture
@@ -76,13 +75,11 @@ func _run_test() -> void:
 	var last_frame: PackedByteArray = session.get_video_frame()
 	if session.get_video_frames_received() < 120 or last_frame.size() != expected_size or audio_frames == 0 or audio_chunks_pushed == 0:
 		push_error("Libretro did not produce complete video and audio output.")
-		audio_player.stop()
 		session.stop()
 		quit(1)
 		return
 	if texture.get_width() != session.get_video_width() or texture.get_height() != session.get_video_height():
 		push_error("The Libretro frame did not convert to a Godot texture.")
-		audio_player.stop()
 		session.stop()
 		quit(1)
 		return
@@ -98,8 +95,6 @@ func _run_test() -> void:
 		elapsed_seconds * 1000.0,
 		120.0 / elapsed_seconds,
 	])
-	audio_player.stop()
-	audio_player.queue_free()
 	audio_playback = null
 	texture = null
 	stream = null

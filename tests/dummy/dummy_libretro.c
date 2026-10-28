@@ -16,6 +16,9 @@
 
 #define VIDEO_WIDTH 320
 #define VIDEO_HEIGHT 240
+/* 0RGB1555, the format the core declares: 2 bytes per pixel, so the pitch
+   Libretro asks for is in bytes, not in pixels. */
+#define VIDEO_PITCH (VIDEO_WIDTH * sizeof(uint16_t))
 #define VIDEO_FPS 60
 #define AUDIO_RATE 48000
 /* Audio frames fed per retro_run: AUDIO_RATE / VIDEO_FPS. */
@@ -118,16 +121,20 @@ void retro_unload_game(void) {
 }
 
 void retro_run(void) {
-  static uint32_t frame[VIDEO_WIDTH * VIDEO_HEIGHT];
+  static uint16_t frame[VIDEO_WIDTH * VIDEO_HEIGHT];
   static int16_t audio[AUDIO_FRAMES_PER_RUN * 2];
   uint64_t counter;
   memcpy(&counter, save_ram, sizeof(counter));
-  memset(frame, (unsigned)(counter & 0xFF), sizeof(frame));
+  /* The counter rides in the blue bits, so a test can see the frame change
+     and a save-state round trip reproduce it. */
+  const uint16_t color = (uint16_t)(0x7C00u | (counter & 0x1Fu));
+  for (int i = 0; i < VIDEO_WIDTH * VIDEO_HEIGHT; i++)
+    frame[i] = color;
   for (int i = 0; i < AUDIO_FRAMES_PER_RUN; i++) {
     audio[i * 2] = (int16_t)(i & 0x7FFF);
     audio[i * 2 + 1] = 0;
   }
-  video_refresh(frame, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_WIDTH);
+  video_refresh(frame, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_PITCH);
   audio_sample_batch(audio, AUDIO_FRAMES_PER_RUN);
 
   counter++;

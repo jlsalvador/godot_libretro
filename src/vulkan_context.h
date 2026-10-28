@@ -57,6 +57,10 @@ private:
 	std::mutex image_mutex;
 	VkImage presented_image = VK_NULL_HANDLE;
 	VkImageLayout presented_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	VkFormat presented_format = VK_FORMAT_UNDEFINED;
+	// Semaphores the core handed over with the presented image. Waiting on a
+	// semaphore consumes it, so the list is taken exactly once per frame.
+	std::vector<VkSemaphore> presented_semaphores;
 
 	VkCommandPool command_pool = VK_NULL_HANDLE;
 	VkCommandBuffer command_buffer = VK_NULL_HANDLE;
@@ -71,6 +75,7 @@ private:
 	bool create_helpers(std::string &r_error);
 	bool ensure_staging(VkDeviceSize size, std::string &r_error);
 	void destroy_helpers();
+	void clear_entry_points();
 
 	static uint32_t get_sync_index_callback(void *handle);
 	static uint32_t get_sync_index_mask_callback(void *handle);

@@ -116,6 +116,9 @@ DUMMY := build/dummy/$(HOST_ARCH)/dummy_libretro.so
 PROBE_ROM := build/roms/sample.dmy
 HOST_EXT_DEBUG := build/godot_libretro/$(HOST_ARCH)/debug/libgodot_libretro.so
 GODOT_PROJECT := tests/godot
+ADDON_DIR := tests/godot/addons/godot_libretro
+# The addon descriptor ships in the zip, so editing it must rebuild the zip.
+ADDON_GDEXTENSION := $(ADDON_DIR)/godot_libretro.gdextension
 
 CHECK_IMAGE_TARGETS := $(addprefix check-image-,$(ARCHES))
 TOOLCHAIN_TARGETS := $(addprefix toolchain-image-,$(ARCHES))
@@ -242,7 +245,7 @@ release: extension-all ## Build the full release matrix (no packaging).
 # addons/ layout a Godot project can extract over its root. A zip is removed
 # before rebuilding: zip would otherwise update the old archive and keep
 # stale entries.
-$(DIST_ZIP): $(EXT_LIBS) LICENSE
+$(DIST_ZIP): $(EXT_LIBS) LICENSE $(ADDON_GDEXTENSION)
 	@rm -f $@
 	@mkdir -p $(@D)
 	rm -rf build/package/addons
@@ -254,7 +257,7 @@ $(DIST_ZIP): $(EXT_LIBS) LICENSE
 	done
 	mkdir -p build/package/addons/godot_libretro
 	cp LICENSE build/package/addons/godot_libretro/
-	cp tests/godot/addons/godot_libretro/godot_libretro.gdextension build/package/addons/godot_libretro/
+	cp $(ADDON_GDEXTENSION) build/package/addons/godot_libretro/
 	@for f in godot_libretro.gdextension LICENSE \
 		.bin/linux/template_debug/arm64/libgodot_libretro.so \
 		.bin/linux/template_debug/x86_64/libgodot_libretro.so \

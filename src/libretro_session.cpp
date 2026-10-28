@@ -4,6 +4,7 @@
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -150,12 +151,44 @@ void *LibretroSession::_acquire_namespace(const std::string &p_path, std::string
 	return handle;
 }
 
+bool LibretroSession::_configure_directories() {
+	// One system directory per core: the Libretro spec hands each core a
+	// directory for system files (BIOS, caches). Both default bases live
+	// under the Godot user data directory, overridable per session.
+	if (system_directory_override.empty()) {
+		system_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/system/" + core_id;
+	} else {
+		system_directory = system_directory_override;
+	}
+	if (save_directory_override.empty()) {
+		save_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/saves";
+	} else {
+		save_directory = save_directory_override;
+	}
+	save_directory_core = String(save_directory.c_str()).path_join(String(core_id.c_str())).utf8().get_data();
+	// Both directories exist before the core loads: it asks for them while
+	// loading (GET_SYSTEM_DIRECTORY, GET_SAVE_DIRECTORY), and a core that
+	// writes its own files expects the save directory to be there.
+	if (DirAccess::make_dir_recursive_absolute(String(system_directory.c_str())) != Error::OK) {
+		last_error = std::string("Could not create the system directory: ") + system_directory;
+		return false;
+	}
+	if (DirAccess::make_dir_recursive_absolute(String(save_directory_core.c_str())) != Error::OK) {
+		last_error = std::string("Could not create the save directory: ") + save_directory_core;
+		return false;
+	}
+	return true;
+}
+
 bool LibretroSession::load_core(const String &p_path) {
 	stop();
 	last_error.clear();
-	core_id = p_path.get_file().get_basename().utf8().get_data();
+	// A core is a real shared object: a res:// or user:// path is resolved
+	// once, here, and the same filesystem path is used everywhere after.
+	const String core_path = ProjectSettings::get_singleton()->globalize_path(p_path).simplify_path();
+	core_id = core_path.get_file().get_basename().utf8().get_data();
 
-	std::string key = p_path.utf8().get_data();
+	std::string key = core_path.utf8().get_data();
 	std::string dl_error;
 	core_handle = _acquire_namespace(key, dl_error);
 	if (!core_handle) {
@@ -173,27 +206,9 @@ bool LibretroSession::load_core(const String &p_path) {
 		return false;
 	}
 
-	// One system directory per core: the libretro spec hands each core a
-	// directory for system files (BIOS, caches). Both default bases live
-	// under the Godot user data directory, overridable per session.
-	if (system_directory_override.empty()) {
-		system_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/system/" + core_id;
-	} else {
-		system_directory = system_directory_override;
-	}
-	if (save_directory_override.empty()) {
-		save_directory = std::string(OS::get_singleton()->get_user_data_dir().utf8().get_data()) + "/saves";
-	} else {
-		save_directory = save_directory_override;
-	}
-	save_directory_core = String(save_directory.c_str()).path_join(String(core_id.c_str())).utf8().get_data();
-	if (DirAccess::make_dir_recursive_absolute(String(system_directory.c_str())) != Error::OK) {
-		last_error = std::string("Could not create the system directory: ") + system_directory;
-		stop();
-		return false;
-	}
-	if (DirAccess::make_dir_recursive_absolute(String(save_directory.c_str())) != Error::OK) {
-		last_error = std::string("Could not create the save directory: ") + save_directory;
+	// The directories a core asks for while loading must exist by then, and
+	// both live under the caller's override or the Godot user data directory.
+	if (!_configure_directories()) {
 		stop();
 		return false;
 	}
@@ -213,12 +228,23 @@ bool LibretroSession::load_core(const String &p_path) {
 		core_name = info.library_name ? info.library_name : "Libretro Core";
 		core_version = info.library_version ? info.library_version : "";
 		core_extensions = info.valid_extensions ? info.valid_extensions : "";
+		// The API requires the content in retro_game_info.data unless the
+		// core declares that it opens the file itself.
+		core_needs_fullpath = info.need_fullpath;
 	}
 	return true;
 }
 
 void LibretroSession::set_save_directory(const String &p_path) {
-	save_directory_override = p_path.utf8().get_data();
+	// The core receives this path verbatim, so res:// and user:// are resolved
+	// here; an empty value means "use the default base".
+	save_directory_override = p_path.is_empty() ? std::string() : ProjectSettings::get_singleton()->globalize_path(p_path).simplify_path().utf8().get_data();
+	// A loaded core has already been handed its directories, so a new base
+	// applies from the next load_core(); before a game is loaded nothing
+	// points into them yet and switching now is safe.
+	if (core_initialized && !game_loaded) {
+		_configure_directories();
+	}
 }
 
 String LibretroSession::get_save_directory() const {
@@ -230,7 +256,13 @@ String LibretroSession::get_save_ram_path() const {
 }
 
 void LibretroSession::set_system_directory(const String &p_path) {
-	system_directory_override = p_path.utf8().get_data();
+	// Same path rule as the save base: the core receives this verbatim.
+	system_directory_override = p_path.is_empty() ? std::string() : ProjectSettings::get_singleton()->globalize_path(p_path).simplify_path().utf8().get_data();
+	// Same rule as the save base: the core already resolved this one when it
+	// loaded, so it applies from the next load_core().
+	if (core_initialized && !game_loaded) {
+		_configure_directories();
+	}
 }
 
 String LibretroSession::get_system_directory() const {
@@ -246,6 +278,7 @@ PackedStringArray LibretroSession::get_core_log_lines() const {
 }
 
 bool LibretroSession::load_game(const String &p_path) {
+	last_error.clear();
 	if (!core_initialized || !core_load_game) {
 		last_error = "Load a Libretro core before loading a game.";
 		return false;
@@ -253,6 +286,9 @@ bool LibretroSession::load_game(const String &p_path) {
 	if (game_loaded) {
 		_save_save_ram();
 		ActiveSessionScope active_scope(this);
+		// A hardware context belongs to the game being replaced: destroy it
+		// before unloading, like stop() does.
+		_stop_hw_render();
 		core_unload_game();
 		game_loaded = false;
 	}
@@ -262,57 +298,50 @@ bool LibretroSession::load_game(const String &p_path) {
 		last_error = "Could not open ROM file: " + std::string(p_path.utf8().get_data());
 		return false;
 	}
-	uint64_t file_size = file->get_length();
+	const uint64_t file_size = file->get_length();
 	if (file_size == 0) {
 		last_error = "ROM file is empty.";
 		return false;
 	}
-	rom_path = p_path.utf8().get_data();
-	// Most cores open the file themselves from game.path. A few upstream
-	// frontends are non-conformant and read game.data unconditionally
-	// (bsnes, gambatte, mupen64plus); only they get the file read in, capped at
-	// 64 MiB so the cap stays a load error, not a giant allocation.
-	static const std::set<std::string> data_cores = {
-		"bsnes_libretro", "gambatte_libretro", "mupen64plus_next_libretro",
-	};
-	const bool needs_data = data_cores.find(core_id) != data_cores.end();
-	if (needs_data) {
-		if (file_size > 64 * 1024 * 1024) {
-			last_error = "ROM file is larger than the 64 MiB data cap of this core.";
-			return false;
-		}
-		rom_data = file->get_buffer(file_size);
-		if (rom_data.size() != file_size) {
+	// The core opens game.path itself, so it gets a filesystem path even when
+	// the caller handed over a res:// or user:// one.
+	const String game_path = ProjectSettings::get_singleton()->globalize_path(p_path);
+	rom_path = game_path.utf8().get_data();
+	// The API requires the content in retro_game_info.data unless the core
+	// declares need_fullpath. A ROM past the cap is offered by path only: a
+	// core that accepts the path still loads, and the allocation stays
+	// bounded without the cap becoming a load error by itself.
+	const bool wants_data = !core_needs_fullpath && file_size <= ROM_DATA_CAP;
+	rom_data.clear();
+	if (wants_data) {
+		rom_data = file->get_buffer(static_cast<int64_t>(file_size));
+		if (rom_data.size() != static_cast<int64_t>(file_size)) {
 			last_error = "Could not read complete ROM file.";
 			return false;
 		}
-	} else {
-		rom_data.clear();
 	}
 
 	retro_game_info game = {};
 	game.path = rom_path.c_str();
-	game.data = needs_data ? rom_data.ptr() : nullptr;
-	game.size = needs_data ? rom_data.size() : 0;
+	game.data = wants_data ? rom_data.ptr() : nullptr;
+	game.size = wants_data ? static_cast<size_t>(rom_data.size()) : 0;
 	{
 		ActiveSessionScope active_scope(this);
 		if (!core_load_game(&game)) {
 			last_error = "Libretro core rejected the ROM.";
+			// A core can take a hardware render device before rejecting the
+			// ROM; drop the request so a later load starts from a clean one.
+			_stop_hw_render();
 			return false;
+		}
+		game_loaded = true;
+		_start_hw_render();
 	}
-	game_loaded = true;
-	_start_hw_render();
-	String core_save_directory = String(save_directory.c_str()).path_join(String(core_id.c_str()));
-	if (DirAccess::make_dir_recursive_absolute(core_save_directory) != Error::OK) {
-		core_unload_game();
-		game_loaded = false;
-		last_error = std::string("Could not create the save directory: ") + core_save_directory.utf8().get_data();
-		return false;
-	}
-	save_ram_path = core_save_directory.path_join(p_path.get_file().get_basename() + ".srm").utf8().get_data();
-		frames_since_save = 0;
-		_load_save_ram();
-
+	save_ram_path = String(save_directory_core.c_str()).path_join(p_path.get_file().get_basename() + ".srm").utf8().get_data();
+	frames_since_save = 0;
+	_load_save_ram();
+	{
+		ActiveSessionScope active_scope(this);
 		retro_system_av_info av_info = {};
 		get_system_av_info(&av_info);
 		video_width = av_info.geometry.base_width;
@@ -320,14 +349,20 @@ bool LibretroSession::load_game(const String &p_path) {
 		frames_per_second = av_info.timing.fps;
 		audio_sample_rate = av_info.timing.sample_rate;
 	}
-	return video_width > 0 && video_height > 0;
+	// The load itself succeeded. A core that reports no geometry yet is not a
+	// load failure: hardware-rendering cores report it from the frame they
+	// present.
+	return true;
 }
 
 void LibretroSession::run_frame() {
 	if (!game_loaded || !run_core) {
 		return;
 	}
-	audio_samples.clear();
+	{
+		std::lock_guard<std::mutex> lock(output_mutex);
+		audio_samples.clear();
+	}
 	{
 		ActiveSessionScope active_scope(this);
 		run_core();
@@ -339,7 +374,7 @@ void LibretroSession::run_frame() {
 }
 
 void LibretroSession::stop() {
-	if (hw_render_requested) {
+	{
 		ActiveSessionScope active_scope(this);
 		_stop_hw_render();
 	}
@@ -355,19 +390,40 @@ void LibretroSession::stop() {
 	}
 	core_initialized = false;
 	_release_namespace();
+	{
+		std::lock_guard<std::mutex> lock(output_mutex);
+		video_rgba.clear();
+		audio_samples.clear();
+	}
 	rom_data.clear();
 	rom_path.clear();
 	core_id.clear();
+	core_needs_fullpath = false;
+	// Everything the core reported goes away with it. Only the caller's own
+	// configuration survives: the directory overrides and the core option
+	// overrides. last_error is kept as the diagnostic of why the session
+	// ended; load_core() and load_game() clear it when they start.
 	core_option_defaults.clear();
-	core_option_resolved.clear();
-	video_rgba.clear();
-	audio_samples.clear();
+	core_option_value.clear();
+	core_options_dirty = false;
+	serialization_quirks = 0;
+	core_log_lines.clear();
+	core_name.clear();
+	core_version.clear();
+	core_extensions.clear();
+	hw_readback_error.clear();
+	pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
+	rumble_interface_taken = false;
 	video_width = 0;
 	video_height = 0;
 	video_frames_received = 0;
+	frames_per_second = 60.0;
+	audio_sample_rate = 48000.0;
 	save_directory_core.clear();
 	save_ram_path.clear();
 	frames_since_save = 0;
+	port_buttons = {};
+	port_axes = {};
 	port_rumble = {};
 	get_memory_data = nullptr;
 	get_memory_size = nullptr;
@@ -382,15 +438,19 @@ void LibretroSession::_start_hw_render() {
 	}
 	// The device was created at SET_HW_RENDER time, when the core's request
 	// was answered truthfully; the core defers graphics init to this point.
+	hw_context_started = true;
 	if (hw_render_request.context_reset) {
 		hw_render_request.context_reset();
 	}
 }
 
 void LibretroSession::_stop_hw_render() {
-	if (hw_render_requested && hw_render_request.context_destroy) {
+	// context_destroy only pairs with a context_reset this session ran: a
+	// rejected load may have taken the device without ever reaching it.
+	if (hw_context_started && hw_render_request.context_destroy) {
 		hw_render_request.context_destroy();
 	}
+	hw_context_started = false;
 	hw_render_requested = false;
 	has_hw_negotiation = false;
 	std::memset(&hw_render_request, 0, sizeof(hw_render_request));
@@ -456,7 +516,16 @@ int LibretroSession::get_save_state_size() {
 		return 0;
 	}
 	ActiveSessionScope active_scope(this);
-	return static_cast<int>(serialize_size());
+	const size_t size = serialize_size();
+	if (size == 0) {
+		last_error = "The core reported an empty save state.";
+		return 0;
+	}
+	if (size > SAVE_STATE_CAP) {
+		last_error = "The core reported a save state larger than the supported cap.";
+		return 0;
+	}
+	return static_cast<int>(size);
 }
 
 PackedByteArray LibretroSession::create_save_state() {
@@ -472,8 +541,18 @@ PackedByteArray LibretroSession::create_save_state() {
 	{
 		ActiveSessionScope active_scope(this);
 		const size_t size = serialize_size();
+		// Both guards keep a null buffer pointer out of the core: ptrw() on an
+		// empty array is null, and a core reads whatever size it is handed.
+		if (size == 0) {
+			last_error = "The core reported an empty save state.";
+			return PackedByteArray();
+		}
+		if (size > SAVE_STATE_CAP) {
+			last_error = "The core reported a save state larger than the supported cap.";
+			return PackedByteArray();
+		}
 		state.resize(static_cast<int64_t>(size));
-		if (!serialize(state.ptrw(), size)) {
+		if (!state.ptrw() || !serialize(state.ptrw(), size)) {
 			last_error = "The core failed to serialize its state.";
 			state.clear();
 			return state;
@@ -491,8 +570,29 @@ bool LibretroSession::restore_save_state(const PackedByteArray &p_state) {
 		last_error = "Load a game before restoring a save state.";
 		return false;
 	}
+	const int64_t state_size = p_state.size();
+	// A null buffer pointer never reaches the core: most cores copy from the
+	// state without looking at a size they cannot trust.
+	if (state_size <= 0 || !p_state.ptr()) {
+		last_error = "The save state is empty.";
+		return false;
+	}
+	if (static_cast<uint64_t>(state_size) > SAVE_STATE_CAP) {
+		last_error = "The save state is larger than the supported cap.";
+		return false;
+	}
 	ActiveSessionScope active_scope(this);
-	if (!unserialize(p_state.ptr(), p_state.size())) {
+	// Unless the core declared variable-sized states, it expects exactly the
+	// size it reports now; anything else is a truncated or foreign state that
+	// it would read past the end of.
+	if (serialize_size && !(serialization_quirks & RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE)) {
+		const size_t expected = serialize_size();
+		if (expected != 0 && static_cast<size_t>(state_size) != expected) {
+			last_error = "The save state does not match the size this core expects.";
+			return false;
+		}
+	}
+	if (!unserialize(p_state.ptr(), static_cast<size_t>(state_size))) {
 		last_error = "The core rejected the save state.";
 		return false;
 	}
@@ -559,11 +659,16 @@ void LibretroSession::set_core_option(const String &p_key, const String &p_value
 		return;
 	}
 	if (value.empty()) {
-		core_option_overrides.erase(key);
-		core_option_resolved.erase(key);
+		if (core_option_overrides.erase(key) > 0) {
+			core_options_dirty = true;
+		}
 	} else {
-		core_option_overrides[key] = value;
-		core_option_resolved[key] = value;
+		const auto existing = core_option_overrides.find(key);
+		if (existing == core_option_overrides.end() || existing->second != value) {
+			core_option_overrides[key] = value;
+			// The core only re-reads its options when it is told they changed.
+			core_options_dirty = true;
+		}
 	}
 }
 
@@ -603,8 +708,9 @@ void LibretroSession::_store_core_option_variable(const retro_variable *p_variab
 }
 
 PackedByteArray LibretroSession::get_video_frame() const {
+	std::lock_guard<std::mutex> lock(output_mutex);
 	PackedByteArray result;
-	result.resize(video_rgba.size());
+	result.resize(static_cast<int64_t>(video_rgba.size()));
 	if (!video_rgba.empty()) {
 		std::memcpy(result.ptrw(), video_rgba.data(), video_rgba.size());
 	}
@@ -612,6 +718,7 @@ PackedByteArray LibretroSession::get_video_frame() const {
 }
 
 PackedVector2Array LibretroSession::get_audio_buffer() {
+	std::lock_guard<std::mutex> lock(output_mutex);
 	PackedVector2Array result;
 	const int frame_count = static_cast<int>(audio_samples.size() / 2);
 	result.resize(frame_count);
@@ -712,7 +819,8 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			}
 			return true;
 		}
-		case RETRO_ENVIRONMENT_GET_VARIABLE: {			if (!p_data) {
+		case RETRO_ENVIRONMENT_GET_VARIABLE: {
+			if (!p_data) {
 				return false;
 			}
 			retro_variable *variable = static_cast<retro_variable *>(p_data);
@@ -721,14 +829,29 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			}
 			const std::string key = variable->key;
 			const auto override = active_session->core_option_overrides.find(key);
-			const auto fallback = active_session->core_option_defaults.find(key);
-			if (override == active_session->core_option_overrides.end() && fallback == active_session->core_option_defaults.end()) {
-				return false;
+			if (override != active_session->core_option_overrides.end()) {
+				active_session->core_option_value = override->second;
+			} else {
+				const auto fallback = active_session->core_option_defaults.find(key);
+				if (fallback == active_session->core_option_defaults.end()) {
+					return false;
+				}
+				active_session->core_option_value = fallback->second;
 			}
-			active_session->core_option_resolved[key] = override != active_session->core_option_overrides.end() ? override->second : fallback->second;
-			variable->value = active_session->core_option_resolved[key].c_str();
+			// One buffer owned by the session: the pointer stays valid until
+			// the next GET_VARIABLE instead of dangling into a cleared map.
+			variable->value = active_session->core_option_value.c_str();
 			return true;
 		}
+		case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+			if (p_data) {
+				// One shot per change: the core re-reads its options after
+				// this query and the flag is cleared here, as the API asks.
+				*static_cast<bool *>(p_data) = active_session->core_options_dirty;
+				active_session->core_options_dirty = false;
+				return true;
+			}
+			return false;
 		case RETRO_ENVIRONMENT_SET_HW_RENDER: {
 			if (!p_data) {
 				return false;
@@ -780,7 +903,11 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			// The size is re-queried before every capture, so variable-sized
 			// states are supported; the remaining bits describe core
 			// restrictions the frontend only honors.
-			*static_cast<uint64_t *>(p_data) |= RETRO_SERIALIZATION_QUIRK_FRONT_VARIABLE_SIZE;
+			uint64_t *quirks = static_cast<uint64_t *>(p_data);
+			*quirks |= RETRO_SERIALIZATION_QUIRK_FRONT_VARIABLE_SIZE;
+			// Kept to know whether an incoming state may legitimately differ
+			// from the size the core reports right now.
+			active_session->serialization_quirks = *quirks;
 			return true;
 		}
 		case RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT: {
@@ -851,13 +978,23 @@ void LibretroSession::_receive_hw_video(unsigned p_width, unsigned p_height) {
 		return;
 	}
 	std::string error;
-	if (!vulkan_context.readback_frame(p_width, p_height, video_rgba, error)) {
-		// Keep the previous frame on readback failure (dupe behavior).
-		return;
+	{
+		std::lock_guard<std::mutex> lock(output_mutex);
+		if (vulkan_context.readback_frame(p_width, p_height, video_rgba, error)) {
+			video_width = p_width;
+			video_height = p_height;
+			video_frames_received++;
+		}
+		// Otherwise the previous frame stays on screen (dupe behavior).
 	}
-	video_width = p_width;
-	video_height = p_height;
-	video_frames_received++;
+	if (!error.empty() && error != hw_readback_error) {
+		// Report a readback failure once: a broken core would flood the log.
+		hw_readback_error = error;
+		core_log_lines.push_back("Vulkan readback: " + error);
+		while (core_log_lines.size() > CORE_LOG_LINES_MAX) {
+			core_log_lines.pop_front();
+		}
+	}
 }
 
 void LibretroSession::_audio_sample_callback(int16_t p_left, int16_t p_right) {
@@ -883,6 +1020,7 @@ int16_t LibretroSession::_input_state_callback(unsigned p_port, unsigned p_devic
 }
 
 void LibretroSession::_receive_video(const void *p_data, unsigned p_width, unsigned p_height, size_t p_pitch) {
+	std::lock_guard<std::mutex> lock(output_mutex);
 	if (!p_data) {
 		// Duplicate frame: re-expose the previous buffer when one exists.
 		if (!video_rgba.empty()) {
@@ -927,12 +1065,14 @@ void LibretroSession::_receive_video(const void *p_data, unsigned p_width, unsig
 }
 
 void LibretroSession::_receive_audio(int16_t p_left, int16_t p_right) {
+	std::lock_guard<std::mutex> lock(output_mutex);
 	audio_samples.push_back(p_left);
 	audio_samples.push_back(p_right);
 }
 
 void LibretroSession::_receive_audio_batch(const int16_t *p_data, size_t p_frames) {
 	if (p_data && p_frames > 0) {
+		std::lock_guard<std::mutex> lock(output_mutex);
 		audio_samples.insert(audio_samples.end(), p_data, p_data + p_frames * 2);
 	}
 }

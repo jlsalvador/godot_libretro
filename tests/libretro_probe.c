@@ -29,11 +29,10 @@ static unsigned audio_frames;
 static uint16_t first_pixel;
 
 static bool environment_callback(unsigned command, void *data) {
-	(void)data;
 	if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT)
-		return true;
+		return data != NULL;
 	/* The test dummy asks for frame duping; answer like the Godot harness. */
-	if (command == RETRO_ENVIRONMENT_GET_CAN_DUPE) {
+	if (command == RETRO_ENVIRONMENT_GET_CAN_DUPE && data) {
 		*(bool *)data = true;
 		return true;
 	}
@@ -42,10 +41,12 @@ static bool environment_callback(unsigned command, void *data) {
 
 static void video_callback(const void *data, unsigned width, unsigned height, size_t pitch) {
 	(void)pitch;
-	if (data && width && height) {
-		video_frames++;
+	/* A null data pointer is a duplicated frame: no pixels to inspect. */
+	if (!data || !width || !height) {
+		return;
 	}
-		first_pixel = ((const uint16_t *)data)[0];
+	video_frames++;
+	first_pixel = ((const uint16_t *)data)[0];
 }
 
 static void audio_callback(int16_t left, int16_t right) {
@@ -78,17 +79,11 @@ static int16_t input_state_callback(unsigned port, unsigned device, unsigned ind
 	}
 
 int main(int argc, char **argv) {
-	/* --symbols CORE.so: only resolve what the host needs from the core. This is
-	 * the check that catches a stripped binary that lost its dynamic symbol
-	 * table, and it works for every core, including the ones that
-	 * need more environment support than this probe implements
-	 * (Gambatte, mupen64plus-next). */
-	int symbols_only = argc == 3 && strcmp(argv[1], "--symbols") == 0;
-	if (!symbols_only && argc != 3) {
-		fprintf(stderr, "Usage: %s CORE.so GAME\n       %s --symbols CORE.so\n", argv[0], argv[0]);
+	if (argc != 3) {
+		fprintf(stderr, "Usage: %s CORE.so GAME\n", argv[0]);
 		return 2;
 	}
-	const char *core_path = symbols_only ? argv[2] : argv[1];
+	const char *core_path = argv[1];
 	const char *game_path = argv[2];
 
 	void *handle = dlopen(core_path, RTLD_NOW | RTLD_LOCAL);
@@ -112,16 +107,7 @@ int main(int argc, char **argv) {
 	LOAD_FN(handle, retro_run, run_fn);
 	LOAD_FN(handle, retro_unload_game, lifecycle_fn);
 
-	if (symbols_only) {
-		struct retro_system_info info = {0};
-		retro_get_system_info(&info);
-		printf("%s %s: every Libretro symbol the host resolves is present (extensions %s)\n",
-				info.library_name, info.library_version,
-				info.valid_extensions ? info.valid_extensions : "-");
-		dlclose(handle);
-		return 0;
-	}
-	/* Save-state exports are optional for the host, but full mode always
+	/* Save-state exports are optional for the host, but this probe always
 	   runs the dummy, so require them here. */
 	LOAD_FN(handle, retro_serialize_size, serialize_size_fn);
 	LOAD_FN(handle, retro_serialize, serialize_fn);
