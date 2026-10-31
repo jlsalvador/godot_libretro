@@ -87,6 +87,12 @@ jobs:
           unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
           chmod +x "$RUNNER_TEMP/godot/${zip%.zip}"
           echo "GODOT=$RUNNER_TEMP/godot/${zip%.zip}" >> "$GITHUB_ENV"
+      # The dummy core asks for hardware rendering, so it includes the Vulkan
+      # headers at compile time; the harness never opens a Vulkan device.
+      - name: Install the Vulkan headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libvulkan-dev
       # PREBUILT=1: the extension comes from the artifact. The dummy core and
       # the probe are built here with the host tools.
       - name: Run the raw Libretro probe and the Godot harness

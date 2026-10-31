@@ -229,7 +229,7 @@ extension-all: $(EXT_LIBS) ## Extension for both arches, debug and release.
 # The dummy (tests/dummy) is built against the pinned libretro.h with the
 # toolchain of the architecture it targets, so `make dummy ARCH=arm64` gives a
 # copy that runs on the device.
-build/dummy/%/dummy_libretro.so: tests/dummy/dummy_libretro.c $(LIBRETRO_H) | $$(dummy_ready)
+build/dummy/%/dummy_libretro.so: tests/dummy/dummy_libretro.c $(LIBRETRO_H) | $$(dummy_ready) $(BOOTLIN_VULKAN)/.headers
 	@mkdir -p $(@D)
 	$(call bootlin_cc,$*) -O2 -Wall -Wextra -Wno-unused-function -fPIC -shared -I third_party/libretro-common/include -I $(ROOTDIR)/$(BOOTLIN_VULKAN) tests/dummy/dummy_libretro.c -o $@
 
