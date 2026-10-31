@@ -231,7 +231,7 @@ extension-all: $(EXT_LIBS) ## Extension for both arches, debug and release.
 # copy that runs on the device.
 build/dummy/%/dummy_libretro.so: tests/dummy/dummy_libretro.c $(LIBRETRO_H) | $$(dummy_ready)
 	@mkdir -p $(@D)
-	$(call bootlin_cc,$*) -O2 -Wall -Wextra -Wno-unused-function -fPIC -shared -I third_party/libretro-common/include tests/dummy/dummy_libretro.c -o $@
+	$(call bootlin_cc,$*) -O2 -Wall -Wextra -Wno-unused-function -fPIC -shared -I third_party/libretro-common/include -I $(ROOTDIR)/$(BOOTLIN_VULKAN) tests/dummy/dummy_libretro.c -o $@
 
 # The callback probe of the dummy core, no Godot involved: it drives the
 # Libretro API against the placeholder ROM and fails if the core stops

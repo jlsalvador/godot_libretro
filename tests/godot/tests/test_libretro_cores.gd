@@ -39,6 +39,17 @@ func _run_test() -> void:
 		quit(1)
 		return
 
+	# A core may ask for hardware rendering before handing over its Vulkan
+	# negotiation interface (mupen64plus_next does). The frontend has to
+	# accept that order; refusing it made every Vulkan core look unsupported.
+	var hw_render_accepted := false
+	for line in session.get_core_log_lines():
+		if line.begins_with("hw render first: request=1"):
+			hw_render_accepted = true
+			break
+	if not hw_render_accepted:
+		failures.append("dummy: the frontend must accept SET_HW_RENDER asked before the negotiation interface")
+
 	var start_time := Time.get_ticks_usec()
 	var video_frames := 0
 	var audio_frames := 0

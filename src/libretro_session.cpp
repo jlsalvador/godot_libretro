@@ -469,8 +469,10 @@ void LibretroSession::_start_hw_render() {
 	if (!hw_render_requested) {
 		return;
 	}
-	// The device was created at SET_HW_RENDER time, when the core's request
-	// was answered truthfully; the core defers graphics init to this point.
+	// The device exists by now: created either when the core asked for
+	// hardware rendering (it had negotiated already) or when it handed over
+	// its negotiation interface right after. The core defers graphics init
+	// to this point.
 	hw_context_started = true;
 	if (hw_render_request.context_reset) {
 		hw_render_request.context_reset();
@@ -901,19 +903,24 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			if (request->context_type != RETRO_HW_CONTEXT_VULKAN) {
 				return false;
 			}
-			// Answer the core truthfully: accept only if we can actually
-			// provide a device. A software-rendering core falls back when
-			// we decline, so a missing driver must not strand the load.
+			active_session->hw_render_request = *request;
+			active_session->hw_render_requested = true;
+			// Cores order these two calls differently: some negotiate the
+			// device first, some (mupen64plus_next) ask for hardware
+			// rendering and only then hand over their negotiation
+			// interface. Answer the request here and build the device as
+			// soon as the negotiation is known, either now or in the
+			// negotiation handler below; refusing because the order is not
+			// the one we expected made every Vulkan core look unsupported.
 			if (!active_session->has_hw_negotiation) {
-				return false;
+				return true;
 			}
 			std::string error;
 			if (!active_session->vulkan_context.ensure_device(&active_session->hw_negotiation, error)) {
 				active_session->vulkan_context.shutdown();
+				active_session->hw_render_requested = false;
 				return false;
 			}
-			active_session->hw_render_request = *request;
-			active_session->hw_render_requested = true;
 			return true;
 		}
 		case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: {
@@ -923,6 +930,15 @@ bool LibretroSession::_environment_callback(unsigned p_command, void *p_data) {
 			active_session->hw_negotiation =
 					*static_cast<const retro_hw_render_context_negotiation_interface_vulkan *>(p_data);
 			active_session->has_hw_negotiation = true;
+			// A core that asked for hardware rendering before offering the
+			// interface has its device built here, once.
+			if (active_session->hw_render_requested && !active_session->vulkan_context.has_device()) {
+				std::string error;
+				if (!active_session->vulkan_context.ensure_device(&active_session->hw_negotiation, error)) {
+					active_session->vulkan_context.shutdown();
+					return false;
+				}
+			}
 			return true;
 		}
 		case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE: {

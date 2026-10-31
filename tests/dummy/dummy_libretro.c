@@ -12,7 +12,10 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <vulkan/vulkan.h>
+
 #include <libretro.h>
+#include <libretro_vulkan.h>
 
 #define VIDEO_WIDTH 320
 #define VIDEO_HEIGHT 240
@@ -102,11 +105,64 @@ void retro_get_system_av_info(struct retro_system_av_info *info) {
   info->timing.sample_rate = (double)AUDIO_RATE;
 }
 
+/* A core that wants hardware rendering may ask for it before it hands the
+ * frontend its negotiation interface, which is the order mupen64plus_next
+ * uses. Record both answers in the log so the harness can assert that the
+ * frontend accepts the request in that order: refusing it made every Vulkan
+ * core look unsupported. The stub factory fails on purpose, so the test
+ * needs no Vulkan device. */
+static bool dummy_create_device(struct retro_vulkan_context *frontend_context,
+                                VkInstance instance, VkPhysicalDevice gpu,
+                                VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr,
+                                const char **required_device_extensions,
+                                unsigned num_required_device_extensions,
+                                const char **required_device_layers,
+                                unsigned num_required_device_layers,
+                                const VkPhysicalDeviceFeatures *required_features) {
+  (void)frontend_context;
+  (void)instance;
+  (void)gpu;
+  (void)surface;
+  (void)get_instance_proc_addr;
+  (void)required_device_extensions;
+  (void)num_required_device_extensions;
+  (void)required_device_layers;
+  (void)num_required_device_layers;
+  (void)required_features;
+  return false;
+}
+
+static void request_hw_render_before_negotiation(void) {
+  struct retro_hw_render_callback hw;
+  memset(&hw, 0, sizeof(hw));
+  hw.context_type = RETRO_HW_CONTEXT_VULKAN;
+  hw.version_major = 1;
+  hw.version_minor = 1;
+  bool hw_accepted = environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw);
+
+  struct retro_hw_render_context_negotiation_interface_vulkan negotiation;
+  memset(&negotiation, 0, sizeof(negotiation));
+  negotiation.interface_type = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN;
+  negotiation.interface_version = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION;
+  negotiation.create_device = dummy_create_device;
+  bool negotiation_accepted =
+      environment(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, &negotiation);
+
+  if (log_cb.log) {
+    char message[128];
+    snprintf(message, sizeof(message), "hw render first: request=%d negotiation=%d",
+             hw_accepted ? 1 : 0, negotiation_accepted ? 1 : 0);
+    log_cb.log(RETRO_LOG_INFO, "%s", message);
+  }
+}
+
+
 bool retro_load_game(const struct retro_game_info *game) {
   FILE *file = fopen(game->path, "rb");
   if (!file)
     return false;
   fclose(file);
+  request_hw_render_before_negotiation();
 
   char *system_directory;
   if (environment(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_directory) &&
