@@ -161,6 +161,9 @@ jobs:
             tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')
             message=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.message // ""')
           fi
+          # A signed tag carries the signature block at the end of the message,
+          # and it must not end up in the release body.
+          message=$(printf '%s\n' "$message" | sed -e '/^-----BEGIN PGP SIGNATURE-----$/,$d' -e '/^-----BEGIN SSH SIGNATURE-----$/,$d')
           # The message's first line titles the release next to the tag name,
           # and the rest is its body, so the release does not repeat its own
           # headline.
